@@ -3,7 +3,15 @@ name: tests
 on:
   push:
     branches: [main, '1.x']
+    tags: ['v*']
   pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
@@ -12,9 +20,18 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Livewire 3 tops out at Laravel 12, so this line has one framework major; the PHP legs
+        # are the axis that matters, with Pest 3 on 8.2 and Pest 4 above it.
         php: ['8.2', '8.3', '8.4']
+        deps: [highest, lowest]
+        exclude:
+          # the floors only need proving once, on the PHP version that declares them
+          - php: '8.3'
+            deps: lowest
+          - php: '8.4'
+            deps: lowest
 
-    name: PHP ${{ matrix.php }}
+    name: PHP ${{ matrix.php }} · ${{ matrix.deps }} deps
 
     steps:
       - uses: actions/checkout@v4
@@ -24,14 +41,63 @@ jobs:
           php-version: ${{ matrix.php }}
           coverage: none
 
-      # Laravel is resolved from the branch's own constraints: 1.x pulls Livewire 3, main pulls
-      # Livewire 4. Nothing to pin here — a Laravel matrix would have to pick versions Composer
-      # now refuses to install anyway (every published Laravel 11 release carries an advisory).
+      # Livewire comes from the branch's own constraint: 1.x resolves Livewire 3, main Livewire 4.
       - name: Install dependencies
-        run: composer update --prefer-dist --no-interaction --no-progress
+        run: >
+          composer update --prefer-dist --no-interaction --no-progress
+          ${{ matrix.deps == 'lowest' && '--prefer-lowest --prefer-stable' || '' }}
 
       - name: Run tests
         run: vendor/bin/pest
 
+  # The package drives Livewire's internal hook pipeline, which carries no BC promise. This job is
+  # the early warning that a Livewire minor moved something — it is allowed to fail.
+  canary:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+
+    name: livewire dev
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          coverage: none
+
+      - name: Install Livewire from its development branch
+        run: |
+          composer config minimum-stability dev
+          composer config prefer-stable true
+          composer require "livewire/livewire:3.x-dev" --no-interaction --no-update
+          composer update --prefer-dist --no-interaction --no-progress
+
+      - name: Run tests
+        run: vendor/bin/pest
+
+  lint:
+    runs-on: ubuntu-latest
+
+    name: lint
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          coverage: none
+
+      - name: Install dependencies
+        run: composer update --prefer-dist --no-interaction --no-progress
+
+      # --strict catches the extra.laravel provider/alias typos a consumer would find for us
+      - name: Validate composer.json
+        run: composer validate --strict
+
       - name: Check formatting
         run: vendor/bin/pint --test
+
+      - name: Static analysis
+        run: vendor/bin/phpstan analyse --no-progress

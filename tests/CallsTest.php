@@ -7,8 +7,12 @@ use Livewire\Exceptions\MethodNotFoundException;
 use RobertStanciu\Wireless\Facades\Wireless;
 use RobertStanciu\Wireless\Tests\Fixtures\Broadcaster;
 use RobertStanciu\Wireless\Tests\Fixtures\Counter;
+use RobertStanciu\Wireless\Tests\Fixtures\Downloader;
 use RobertStanciu\Wireless\Tests\Fixtures\Injected;
+use RobertStanciu\Wireless\Tests\Fixtures\Listener;
+use RobertStanciu\Wireless\Tests\Fixtures\LiveValidated;
 use RobertStanciu\Wireless\Tests\Fixtures\Signup;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 
 it('calls a method and keeps what it returned', function () {
     Wireless::run(Counter::class, ['start' => 1], function ($counter) {
@@ -35,9 +39,9 @@ it('resolves action dependencies out of the container', function () {
     });
 });
 
-it('refuses a method the browser could not call either', function () {
-    Wireless::run(Counter::class, [], function ($counter) {
-        expect(fn () => $counter->call('hidden'))->toThrow(MethodNotFoundException::class);
+it('refuses a method the browser could not call either', function (string $method) {
+    Wireless::run(Counter::class, [], function ($counter) use ($method) {
+        expect(fn () => $counter->call($method))->toThrow(MethodNotFoundException::class);
     });
 })->with([
     'protected' => 'hidden',
@@ -45,11 +49,76 @@ it('refuses a method the browser could not call either', function () {
     'render' => 'render',
 ]);
 
+it('does not re-throw an earlier failure from a later, clean call', function () {
+    Wireless::run(Signup::class, [], function ($signup) {
+        try {
+            $signup->call('reject');   // addError() only — it leaves the bag dirty
+        } catch (ValidationException) {
+            // expected
+        }
+
+        // a method that validates nothing must not inherit the previous call's errors
+        expect($signup->call('untouched')->returned())->toBe('nothing to validate');
+    });
+});
+
+it('clears the bag again when a later call validates cleanly', function () {
+    Wireless::run(Signup::class, [], function ($signup) {
+        $signup->keepValidationErrors()->call('save');
+
+        expect($signup->errors()->has('email'))->toBeTrue();
+
+        $signup->throwValidationErrors()->set('email', 'a@b.com')->call('save');
+
+        expect($signup->returned())->toBe('saved: a@b.com')
+            ->and($signup->errors()->isEmpty())->toBeTrue();
+    });
+});
+
+it('rethrows the validator own exception, not a rebuilt one', function () {
+    Wireless::run(Signup::class, [], function ($signup) {
+        try {
+            $signup->set('email', 'nope')->call('save');
+        } catch (ValidationException $e) {
+            // a rebuilt exception has no failed rules to report
+            expect($e->validator->failed())->toHaveKey('email')
+                ->and($e->validator->failed()['email'])->toHaveKey('Email');
+
+            return;
+        }
+
+        throw new RuntimeException('it should not have validated');
+    });
+});
+
+it('forgets what the previous call returned when a later one throws', function () {
+    Wireless::run(Counter::class, ['start' => 0], function ($counter) {
+        expect($counter->call('increment', 3)->returned())->toBe(3);
+
+        try {
+            $counter->call('doesNotExist');
+        } catch (MethodNotFoundException) {
+            // expected
+        }
+
+        expect($counter->returned())->toBeNull();
+    });
+});
+
+it('sends an event to the component through dispatch()', function () {
+    Wireless::run(Listener::class, [], function ($listener) {
+        $listener->dispatch('order-placed', reference: 'INV-9');
+
+        expect($listener->returned())->toBe('handled INV-9')
+            ->and($listener->get('heard'))->toBe(['INV-9']);
+    });
+});
+
 it('lets the component dispatch to the browser', function () {
     Wireless::run(Broadcaster::class, [], function ($broadcaster) {
         $broadcaster->call('announce', 'ready');
 
-        $dispatches = $broadcaster->dispatches();
+        $dispatches = $broadcaster->dispatched();
 
         expect($dispatches)->toHaveCount(1)
             ->and($dispatches[0]['name'])->toBe('announced')
@@ -121,5 +190,43 @@ it('drives a form object end to end', function () {
 it('has an empty error bag until something fails', function () {
     Wireless::run(Signup::class, [], function ($signup) {
         expect($signup->errors()->isEmpty())->toBeTrue();
+    });
+});
+
+it('does not lose a validation failure an updated hook produced', function () {
+    Wireless::run(LiveValidated::class, [], function ($form) {
+        // Livewire swallows the hook's failure into the bag; save() validates nothing, so without
+        // carrying the failure forward the row would import as "saved" with a bad address
+        expect(fn () => $form->set('email', 'not-an-email')->call('save'))
+            ->toThrow(ValidationException::class);
+    });
+});
+
+it('lets a good value through the same hook', function () {
+    $saved = Wireless::run(LiveValidated::class, [], fn ($form) => $form
+        ->set('email', 'ada@example.com')
+        ->call('save')
+        ->returned());
+
+    expect($saved)->toBe('saved: ada@example.com');
+});
+
+it('keeps an updated hook failure in the bag when asked to', function () {
+    Wireless::run(LiveValidated::class, [], function ($form) {
+        $form->keepValidationErrors()->set('email', 'nope')->call('save');
+
+        expect($form->errors()->has('email'))->toBeTrue()
+            ->and($form->returned())->toBe('saved: nope');
+    });
+});
+
+it('hands back a file response instead of swallowing it', function () {
+    // the download EFFECT needs dehydrate, which this cycle never runs — but the response a method
+    // returns is the caller's to stream or store
+    Wireless::run(Downloader::class, [], function ($downloader) {
+        $response = $downloader->call('export')->returned();
+
+        expect($response)->toBeInstanceOf(StreamedResponse::class)
+            ->and($response->headers->get('Content-Type'))->toBe('text/csv');
     });
 });

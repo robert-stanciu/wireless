@@ -8,6 +8,10 @@
         "headless"
     ],
     "homepage": "https://github.com/robert-stanciu/wireless",
+    "support": {
+        "issues": "https://github.com/robert-stanciu/wireless/issues",
+        "source": "https://github.com/robert-stanciu/wireless"
+    },
     "license": "MIT",
     "authors": [
         {
@@ -17,14 +21,18 @@
     ],
     "require": {
         "php": "^8.2",
+        "illuminate/auth": "^12.0",
         "illuminate/contracts": "^12.0",
         "illuminate/support": "^12.0",
-        "livewire/livewire": "^3.0"
+        "illuminate/validation": "^12.0",
+        "livewire/livewire": "^3.6"
     },
     "require-dev": {
+        "composer-runtime-api": "^2.0",
         "laravel/pint": "^1.18",
         "orchestra/testbench": "^10.0",
-        "pestphp/pest": "^3.0|^4.0"
+        "pestphp/pest": "^3.0|^4.0",
+        "phpstan/phpstan": "^2.0"
     },
     "autoload": {
         "psr-4": {
@@ -37,8 +45,15 @@
         }
     },
     "scripts": {
+        "analyse": "vendor/bin/phpstan analyse",
+        "lint": "vendor/bin/pint --test",
+        "fix": "vendor/bin/pint",
         "test": "vendor/bin/pest",
-        "lint": "vendor/bin/pint"
+        "ci": [
+            "@lint",
+            "@analyse",
+            "@test"
+        ]
     },
     "config": {
         "allow-plugins": {
@@ -47,6 +62,9 @@
         "sort-packages": true
     },
     "extra": {
+        "branch-alias": {
+            "dev-1.x": "3.x-dev"
+        },
         "laravel": {
             "providers": [
                 "RobertStanciu\\Wireless\\WirelessServiceProvider"
@@ -55,7 +73,5 @@
                 "Wireless": "RobertStanciu\\Wireless\\Facades\\Wireless"
             }
         }
-    },
-    "minimum-stability": "stable",
-    "prefer-stable": true
+    }
 }
