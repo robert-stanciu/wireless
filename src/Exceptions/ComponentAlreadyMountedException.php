@@ -6,7 +6,7 @@ namespace RobertStanciu\Wireless\Exceptions;
 
 use RuntimeException;
 
-class AlreadyMounted extends RuntimeException
+class ComponentAlreadyMountedException extends RuntimeException implements WirelessException
 {
     public static function for(string $component): self
     {

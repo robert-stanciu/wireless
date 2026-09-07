@@ -5,9 +5,12 @@ declare(strict_types=1);
 namespace RobertStanciu\Wireless;
 
 use Closure;
+use Illuminate\Auth\AuthManager;
+use Illuminate\Auth\SessionGuard;
 use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Support\MessageBag;
 use Illuminate\Support\Traits\Macroable;
+use Illuminate\Support\Traits\Tappable;
 use Illuminate\Validation\ValidationException;
 use Livewire\Component;
 use Livewire\Drawer\Utils;
@@ -15,9 +18,10 @@ use Livewire\Exceptions\EventHandlerDoesNotExist;
 use Livewire\Exceptions\MethodNotFoundException;
 use Livewire\Livewire;
 use Livewire\Mechanisms\HandleComponents\ComponentContext;
-use RobertStanciu\Wireless\Exceptions\AlreadyMounted;
-use RobertStanciu\Wireless\Exceptions\ComponentNotMounted;
+use RobertStanciu\Wireless\Exceptions\ComponentAlreadyMountedException;
+use RobertStanciu\Wireless\Exceptions\ComponentNotMountedException;
 use Throwable;
+use WeakMap;
 
 use function Livewire\on;
 use function Livewire\store;
@@ -34,16 +38,26 @@ use function Livewire\wrap;
 class ComponentDriver
 {
     use Macroable;
-
-    /** Cycles alive across all drivers, so nested ones only tear the shared state down once. */
-    private static int $liveCycles = 0;
+    use Tappable;
 
     /**
-     * The application's redirector, captured when the outermost cycle opened. Shared rather than
-     * per-driver: two drivers finished in mount order would otherwise put back a Livewire
-     * Redirector as if it were Laravel's.
+     * Every driver with an open cycle. A registry rather than a counter: a driver that is dropped
+     * without finishing used to leave the count above zero, and from then on no later cycle would
+     * ever restore the shared state — one forgotten finish() poisoned the whole worker. Weak, so
+     * being registered here cannot be what keeps an abandoned driver alive.
+     *
+     * @var WeakMap<self, bool>|null
      */
-    private static mixed $applicationRedirector = null;
+    private static ?WeakMap $open = null;
+
+    /**
+     * The application's redirector as it was registered before the outermost cycle: the container
+     * binding, not just the resolved instance. Shared, because two drivers finished in mount order
+     * would otherwise put back a Livewire Redirector as if it were Laravel's.
+     *
+     * @var array{instance: mixed, binding: array<string, mixed>|null}|null
+     */
+    private static ?array $applicationRedirector = null;
 
     /** Whether Livewire's own per-request state was already in use when the outermost cycle began. */
     private static bool $livewireWasBusy = false;
@@ -56,12 +70,17 @@ class ComponentDriver
 
     private bool $throwOnValidationErrors = true;
 
+    private bool $finished = false;
+
     private bool $pushedComponent = false;
 
-    private bool $pushedRedirector = false;
+    /** How deep Livewire's redirector stack was before this cycle pushed onto it. */
+    private ?int $redirectorDepth = null;
 
     /** @var array{0: ?string, 1: ?Authenticatable}|null  guard and user to restore at finish() */
     private ?array $previousUser = null;
+
+    private ?Authenticatable $actingAsUser = null;
 
     /** Readable after finish(), when the component itself is gone. */
     private ?string $finishedRedirect = null;
@@ -83,32 +102,38 @@ class ComponentDriver
     public function mount(array $params = []): static
     {
         if ($this->component !== null) {
-            throw AlreadyMounted::for($this->name);
+            throw ComponentAlreadyMountedException::for($this->name);
         }
+
+        // a reused driver must not answer for the cycle before it
+        $this->returned = null;
+        $this->finished = false;
+        $this->finishedRedirect = null;
+        $this->finishedDispatches = [];
+        $this->finishedErrors = null;
 
         // resolve first: an unknown component or a failing constructor must not leave a cycle open
         $component = app('livewire')->new($this->name);
 
-        if (self::$liveCycles === 0) {
+        if (self::open()->count() === 0) {
             // SupportRedirects::boot() swaps the container's `redirect` binding for a Livewire
             // Redirector and only puts it back during `dehydrate`, the one hook this cycle must
-            // never run. Snapshot the real one so the surrounding request keeps emitting genuine
-            // RedirectResponse objects once we are done.
-            self::$applicationRedirector = app('redirect');
+            // never run. Snapshot how the real one was REGISTERED — restoring only the resolved
+            // instance would turn Laravel's singleton into a pinned object holding this request's
+            // session for every request after it.
+            self::$applicationRedirector = Lifecycle::captureRedirector();
 
-            self::$livewireWasBusy = Lifecycle::componentsInFlight() > 0
-                || Lifecycle::aComponentHasRendered()
-                || Livewire::isLivewireRequest();
+            self::$livewireWasBusy = Lifecycle::livewireIsBusy();
         }
 
-        self::$liveCycles++;
+        self::open()[$this] = true;
 
         $parent = app('livewire')->current();
 
         $this->component = $component;
         $this->context = new ComponentContext($component, mounting: true);
 
-        $redirectorsBefore = Lifecycle::redirectorsInFlight();
+        $this->redirectorDepth = Lifecycle::redirectorsInFlight();
 
         // Livewire reads this stack for the parent of anything mounted or rendered inside the
         // cycle; without the push, a nested component would be handed whatever came before.
@@ -119,15 +144,11 @@ class ComponentDriver
             Lifecycle::mount($component, $params, $parent);
         } catch (Throwable $e) {
             // a component whose mount() throws must not leave the redirector swapped, the stacks
-            // unbalanced or the cycle counted
-            $this->pushedRedirector = Lifecycle::redirectorsInFlight() > $redirectorsBefore;
-
+            // unbalanced or the cycle open
             $this->finish();
 
             throw $e;
         }
-
-        $this->pushedRedirector = Lifecycle::redirectorsInFlight() > $redirectorsBefore;
 
         return $this;
     }
@@ -179,9 +200,10 @@ class ComponentDriver
             $earlyReturn = $return;
         };
 
-        // the bag survives between calls, exactly as it does inside one request, so only the errors
-        // THIS call is responsible for may turn into an exception
-        $before = $this->errors()->getMessages();
+        // a call starts with a clean bag, the way a request does — otherwise "are these errors
+        // mine?" has no answer: MessageBag de-duplicates, so the same bad input twice would leave
+        // the bag unchanged and read as success
+        $component->resetErrorBag();
 
         // Livewire's validation hook swallows the exception and writes the bag instead, so the
         // real one — with its validator, its error bag name and its response — is caught here and
@@ -217,7 +239,7 @@ class ComponentDriver
 
         // only once the call itself came back: reporting validation while another exception is
         // unwinding would replace the caller's real failure with a message from the bag
-        $this->throwOnNewValidationErrors($before, $captured);
+        $this->throwOnValidationFailure($captured);
 
         return $this;
     }
@@ -247,10 +269,20 @@ class ComponentDriver
     /**
      * Run the cycle as a given user, putting the previous one back at finish() — a loop that
      * drives one component per row must not leak the last row's user into the next.
+     *
+     * It has to come BEFORE the mount, because that is where a component reads the current user:
+     * `Wireless::actingAs($user)->run(...)` for the closure form, or on the driver before mount().
+     *
+     * @throws ComponentAlreadyMountedException
      */
     public function actingAs(Authenticatable $user, ?string $guard = null): static
     {
+        if ($this->component !== null) {
+            throw ComponentAlreadyMountedException::for($this->name);
+        }
+
         $this->previousUser = [$guard, auth()->guard($guard)->user()];
+        $this->actingAsUser = $user;
 
         auth()->guard($guard)->setUser($user);
 
@@ -259,15 +291,23 @@ class ComponentDriver
 
     public function errors(): MessageBag
     {
-        return $this->component === null
-            ? $this->finishedErrors ?? new MessageBag
-            : $this->component->getErrorBag();
+        if ($this->component !== null) {
+            return $this->component->getErrorBag();
+        }
+
+        // never mounted is NOT "no errors": that answer reads as success to a caller inspecting a
+        // row that failed before it ever got a component
+        $this->guardAgainstReadingBeforeMount();
+
+        return $this->finishedErrors ?? new MessageBag;
     }
 
     /**
-     * Whatever Livewire has already written to the response context. Most effects — redirects,
-     * dispatches — are only added during `dehydrate`, which this cycle never runs, so prefer
-     * redirect() and dispatches(); this is here for hooks that record theirs earlier.
+     * Whatever Livewire has already written to the response context. Redirects and dispatches are
+     * only added during `dehydrate`, which this cycle never runs, so this is empty unless a custom
+     * ComponentHook writes an effect during `mount` or `call` — read redirect() and dispatched().
+     *
+     * @internal
      *
      * @return array<string, mixed>
      */
@@ -282,9 +322,11 @@ class ComponentDriver
      *
      * @return array<int, array{name: string, params: array<array-key, mixed>}>
      */
-    public function dispatches(): array
+    public function dispatched(): array
     {
         if ($this->component === null) {
+            $this->guardAgainstReadingBeforeMount();
+
             return $this->finishedDispatches;
         }
 
@@ -295,21 +337,14 @@ class ComponentDriver
     }
 
     /**
-     * Send an event to the component's own listeners, the way a browser event would arrive.
+     * Send an event to the component's own listeners, the way a browser event would arrive. It is
+     * a call like any other, so returned() then holds what the LISTENER returned.
      *
      * @throws EventHandlerDoesNotExist
      */
     public function dispatch(string $event, mixed ...$params): static
     {
         return $this->call('__dispatch', $event, $params);
-    }
-
-    /** Step out of the chain for a side effect, then carry on. */
-    public function tap(Closure $callback): static
-    {
-        $callback($this);
-
-        return $this;
     }
 
     public function mounted(): bool
@@ -324,9 +359,13 @@ class ComponentDriver
      */
     public function redirect(): ?string
     {
-        return $this->component === null
-            ? $this->finishedRedirect
-            : store($this->component)->get('redirect');
+        if ($this->component !== null) {
+            return store($this->component)->get('redirect');
+        }
+
+        $this->guardAgainstReadingBeforeMount();
+
+        return $this->finishedRedirect;
     }
 
     /** The component itself, for assertions or for reading anything this driver does not expose. */
@@ -342,25 +381,36 @@ class ComponentDriver
     public function finish(): static
     {
         if ($this->component === null) {
+            // the mount may have failed after actingAs() switched the user
+            $this->rescue(fn () => $this->restorePreviousUser());
+
             return $this;
         }
 
-        // what the caller may still want to read once the component is gone
-        $this->finishedRedirect = $this->redirect();
-        $this->finishedDispatches = $this->dispatches();
-        $this->finishedErrors = $this->errors();
-
         try {
+            // what the caller may still want to read once the component is gone. Inside the try:
+            // serialising a dispatch to a component Livewire cannot resolve throws, and a
+            // convenience read must never be able to abort the teardown below.
+            $this->finishedRedirect = $this->rescue(fn () => $this->redirect());
+            $this->finishedDispatches = $this->rescue(fn () => $this->dispatched()) ?? [];
+            $this->finishedErrors = $this->rescue(fn () => $this->errors());
+
             Lifecycle::destroy($this->component, $this->context());
         } catch (Throwable $e) {
             // finish() usually runs from a `finally`; a throwing destroy hook must not replace the
             // exception the caller is already handling
-            report($e);
+            $this->report($e);
         } finally {
             $this->tearDown();
         }
 
         return $this;
+    }
+
+    /** A dropped driver still has to give the shared state back. */
+    public function __destruct()
+    {
+        $this->rescue(fn () => $this->finish());
     }
 
     private function tearDown(): void
@@ -369,40 +419,85 @@ class ComponentDriver
             Lifecycle::popComponent($this->component);
         }
 
-        if ($this->pushedRedirector) {
-            Lifecycle::popRedirectorStack();
+        if ($this->redirectorDepth !== null) {
+            Lifecycle::unwindRedirectorsTo($this->redirectorDepth);
         }
 
         $this->component = null;
         $this->context = null;
+        $this->finished = true;
         $this->pushedComponent = false;
-        $this->pushedRedirector = false;
+        $this->redirectorDepth = null;
 
-        // its own try: a guard that refuses the restore must not skip the teardown below
-        try {
-            $this->restorePreviousUser();
-        } catch (Throwable $e) {
-            report($e);
-        }
+        $this->rescue(fn () => $this->restorePreviousUser());
 
-        self::$liveCycles = max(0, self::$liveCycles - 1);
+        unset(self::open()[$this]);
 
-        if (self::$liveCycles > 0) {
+        if (self::open()->count() > 0) {
             return;
         }
 
-        Lifecycle::restoreRedirector(self::$applicationRedirector);
+        $this->rescue(fn () => Lifecycle::restoreRedirector(self::$applicationRedirector));
 
         self::$applicationRedirector = null;
 
-        // flushState() is Livewire's BETWEEN-REQUESTS reset: run while a real request is still
-        // rendering components it would drop their asset injection, blade keys and redirector
-        // stack, so it only runs when Wireless was the only thing driving components.
-        if (! self::$livewireWasBusy) {
+        // flushState() is Livewire's BETWEEN-REQUESTS reset — it drops asset-injection flags,
+        // blade keys and every other `flush-state` listener's state. Inside an HTTP request that
+        // belongs to the request, so the flush is for console work (jobs, commands), which is
+        // where an unflushed process would otherwise carry state between units of work.
+        if (! self::$livewireWasBusy && app()->runningInConsole()) {
             Livewire::flushState();
         }
 
         self::$livewireWasBusy = false;
+    }
+
+    /**
+     * Livewire has thrown its per-request state away, so everything this class remembers about a
+     * cycle — which are open, what the redirector was — describes a world that no longer exists.
+     *
+     * @internal called from the service provider's `flush-state` listener
+     */
+    public static function forgetOpenCycles(): void
+    {
+        self::$open = null;
+        self::$applicationRedirector = null;
+        self::$livewireWasBusy = false;
+    }
+
+    /** @return WeakMap<self, bool> */
+    private static function open(): WeakMap
+    {
+        return self::$open ??= new WeakMap;
+    }
+
+    /**
+     * Run something whose failure must not derail a teardown.
+     *
+     * @template TValue
+     *
+     * @param  Closure(): TValue  $work
+     * @return TValue|null
+     */
+    private function rescue(Closure $work): mixed
+    {
+        try {
+            return $work();
+        } catch (Throwable $e) {
+            $this->report($e);
+
+            return null;
+        }
+    }
+
+    /** Even the reporter can be misconfigured, and teardown still has to finish. */
+    private function report(Throwable $e): void
+    {
+        try {
+            report($e);
+        } catch (Throwable) {
+            // nothing left to do with it
+        }
     }
 
     private function restorePreviousUser(): void
@@ -411,37 +506,56 @@ class ComponentDriver
             return;
         }
 
-        [$guard, $user] = $this->previousUser;
+        [$name, $user] = $this->previousUser;
 
         $this->previousUser = null;
+        $actingAs = $this->actingAsUser;
+        $this->actingAsUser = null;
 
-        // setUser() is typed non-nullable, and "nobody was logged in" is the normal state in a job
-        $user === null
-            ? auth()->guard($guard)->forgetUser()
-            : auth()->guard($guard)->setUser($user);
+        $guard = auth()->guard($name);
+
+        // another cycle may have switched user after this one did; the last driver to finish must
+        // not undo a switch it never made
+        if ($actingAs !== null && $guard->user() !== $actingAs) {
+            return;
+        }
+
+        if ($user !== null) {
+            $guard->setUser($user);
+
+            return;
+        }
+
+        // "nobody was logged in" is the normal state in a job or a command, and setUser() is typed
+        // non-nullable — a session guard can forget its user, anything else is dropped wholesale so
+        // the next resolve starts from the request again
+        if ($guard instanceof SessionGuard) {
+            $guard->forgetUser();
+
+            return;
+        }
+
+        // forgetGuards() would drop every OTHER guard the request had authenticated too
+        Lifecycle::forgetGuard($name ?? app(AuthManager::class)->getDefaultDriver());
     }
 
-    /**
-     * @param  array<string, array<int, string>>  $before  the bag as it stood before the call
-     *
-     * @throws ValidationException
-     */
-    private function throwOnNewValidationErrors(array $before, ?ValidationException $captured): void
+    /** @throws ValidationException */
+    private function throwOnValidationFailure(?ValidationException $captured): void
     {
         if (! $this->throwOnValidationErrors) {
             return;
         }
 
-        $after = $this->errors()->getMessages();
-
-        // a captured exception is proof THIS call failed validation — the same bad input twice
-        // running produces an identical bag, which a diff alone would read as success
+        // the validator's own exception where there was one, so the caller still gets
+        // $e->validator->failed(); a bag filled by addError() alone has none to keep
         if ($captured !== null) {
             throw $captured;
         }
 
-        if ($after !== [] && $after !== $before) {
-            throw ValidationException::withMessages($after);
+        $errors = $this->errors();
+
+        if ($errors->isNotEmpty()) {
+            throw ValidationException::withMessages($errors->getMessages());
         }
     }
 
@@ -460,13 +574,21 @@ class ComponentDriver
         }
     }
 
+    /** @throws ComponentNotMountedException */
+    private function guardAgainstReadingBeforeMount(): void
+    {
+        if (! $this->finished) {
+            throw ComponentNotMountedException::for($this->name);
+        }
+    }
+
     private function component(): Component
     {
-        return $this->component ?? throw ComponentNotMounted::for($this->name);
+        return $this->component ?? throw ComponentNotMountedException::for($this->name);
     }
 
     private function context(): ComponentContext
     {
-        return $this->context ?? throw ComponentNotMounted::for($this->name);
+        return $this->context ?? throw ComponentNotMountedException::for($this->name);
     }
 }

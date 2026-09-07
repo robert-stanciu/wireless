@@ -5,9 +5,9 @@ declare(strict_types=1);
 namespace RobertStanciu\Wireless;
 
 use Closure;
-use Illuminate\Support\Traits\Macroable;
-use InvalidArgumentException;
+use Illuminate\Contracts\Auth\Authenticatable;
 use Livewire\Component;
+use RobertStanciu\Wireless\Exceptions\MissingCallbackException;
 use Throwable;
 
 /**
@@ -20,7 +20,8 @@ use Throwable;
  */
 class Wireless
 {
-    use Macroable;
+    /** @var array{0: Authenticatable, 1: ?string}|null */
+    private ?array $actingAs = null;
 
     /**
      * Mount a component and hand it to the caller, tearing the cycle down afterwards even when the
@@ -36,16 +37,16 @@ class Wireless
      *
      * @template TReturn
      *
-     * @throws Throwable
+     * @throws MissingCallbackException|Throwable
      */
-    public function run(string $component, array|Closure $params = [], ?Closure $callback = null): mixed
+    public function run(string $component, array|Closure $params, ?Closure $callback = null): mixed
     {
         if ($params instanceof Closure) {
             [$params, $callback] = [[], $params];
         }
 
         if ($callback === null) {
-            throw new InvalidArgumentException('Wireless::run() needs a callback to hand the component to.');
+            throw MissingCallbackException::make();
         }
 
         $driver = $this->component($component);
@@ -68,6 +69,27 @@ class Wireless
      */
     public function component(string $component): ComponentDriver
     {
-        return new ComponentDriver($component);
+        $driver = new ComponentDriver($component);
+
+        if ($this->actingAs !== null) {
+            $driver->actingAs(...$this->actingAs);
+        }
+
+        return $driver;
+    }
+
+    /**
+     * Drive the next cycle as this user — before the mount, which is where a component reads
+     * `Auth::user()`. The previous user is put back when the cycle finishes.
+     *
+     * `Wireless::actingAs($user)->run(CreateInvoice::class, [...], fn ($form) => ...)`
+     */
+    public function actingAs(Authenticatable $user, ?string $guard = null): self
+    {
+        $clone = clone $this;
+
+        $clone->actingAs = [$user, $guard];
+
+        return $clone;
     }
 }

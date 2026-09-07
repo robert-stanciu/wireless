@@ -5,8 +5,8 @@ declare(strict_types=1);
 use Composer\InstalledVersions;
 use Livewire\Mechanisms\HandleComponents\HandleComponents;
 use RobertStanciu\Wireless\ComponentDriver;
-use RobertStanciu\Wireless\Exceptions\AlreadyMounted;
-use RobertStanciu\Wireless\Exceptions\ComponentNotMounted;
+use RobertStanciu\Wireless\Exceptions\ComponentAlreadyMountedException;
+use RobertStanciu\Wireless\Exceptions\ComponentNotMountedException;
 use RobertStanciu\Wireless\Facades\Wireless;
 use RobertStanciu\Wireless\Lifecycle;
 use RobertStanciu\Wireless\Tests\Fixtures\Counter;
@@ -41,7 +41,7 @@ it('is done with the component once finished', function () {
 
     $counter->finish();
 
-    expect(fn () => $counter->get('count'))->toThrow(ComponentNotMounted::class);
+    expect(fn () => $counter->get('count'))->toThrow(ComponentNotMountedException::class);
 });
 
 it('can be mounted again after finishing', function () {
@@ -81,7 +81,7 @@ it('shrugs when the callback finishes the driver itself', function () {
 it('refuses a second mount while the first is still open', function () {
     $driver = Wireless::component(Counter::class)->mount();
 
-    expect(fn () => $driver->mount())->toThrow(AlreadyMounted::class);
+    expect(fn () => $driver->mount())->toThrow(ComponentAlreadyMountedException::class);
 
     $driver->finish();
 });

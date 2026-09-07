@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use Carbon\CarbonImmutable;
 use Illuminate\Support\Collection;
 use Livewire\Features\SupportLockedProperties\CannotUpdateLockedPropertyException;
 use Livewire\Livewire;
@@ -11,6 +12,8 @@ use RobertStanciu\Wireless\Tests\Fixtures\Cascading;
 use RobertStanciu\Wireless\Tests\Fixtures\Counter;
 use RobertStanciu\Wireless\Tests\Fixtures\Guarded;
 use RobertStanciu\Wireless\Tests\Fixtures\Signup;
+use RobertStanciu\Wireless\Tests\Fixtures\Suit;
+use RobertStanciu\Wireless\Tests\Fixtures\Typed;
 
 it('updates a property through livewire, so the updated hook fires', function () {
     Wireless::run(Counter::class, [], function ($counter) {
@@ -123,5 +126,25 @@ it('returns null for a property that is not there', function () {
     Wireless::run(Counter::class, [], function ($counter) {
         expect($counter->get('nope'))->toBeNull()
             ->and($counter->get('deeply.nested.nope'))->toBeNull();
+    });
+});
+
+it('hydrates a value into the type the property declares', function () {
+    Wireless::run(Typed::class, [], function ($typed) {
+        // what a browser update carries is a string; only the synthesizers make it an enum or a date
+        $typed->set('suit', 'spades')->set('on', '2025-03-04');
+
+        expect($typed->get('suit'))->toBe(Suit::Spades)
+            ->and($typed->get('on'))->toBeInstanceOf(CarbonImmutable::class)
+            ->and($typed->get('on')->toDateString())->toBe('2025-03-04');
+    });
+});
+
+it('leaves the component alone when a property is named like a reserved mount param', function () {
+    // disabling lazy loading used to be done by injecting lazy/defer INTO the mount payload, which
+    // Livewire then wrote onto matching properties and mount() parameters
+    Wireless::run(Typed::class, [], function ($typed) {
+        expect($typed->get('defer'))->toBe('untouched')
+            ->and($typed->get('lazyParam'))->toBe('a default nobody should overwrite');
     });
 });

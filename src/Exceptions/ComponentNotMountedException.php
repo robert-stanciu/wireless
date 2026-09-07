@@ -6,7 +6,7 @@ namespace RobertStanciu\Wireless\Exceptions;
 
 use RuntimeException;
 
-class ComponentNotMounted extends RuntimeException
+class ComponentNotMountedException extends RuntimeException implements WirelessException
 {
     public static function for(string $component): self
     {

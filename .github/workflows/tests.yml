@@ -6,6 +6,13 @@ on:
     tags: ['v*']
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -13,8 +20,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Laravel 13 and Pest 4 need PHP 8.3+, so the 8.2 leg is the Laravel 12 / Pest 3 one and
+        # the newer legs cover Laravel 13 — both majors are exercised, without a second axis.
         php: ['8.2', '8.3', '8.4']
         deps: [highest, lowest]
+        exclude:
+          # the floors only need proving once, on the PHP version that declares them
+          - php: '8.3'
+            deps: lowest
+          - php: '8.4'
+            deps: lowest
 
     name: PHP ${{ matrix.php }} · ${{ matrix.deps }} deps
 
@@ -27,11 +42,36 @@ jobs:
           coverage: none
 
       # Livewire comes from the branch's own constraint: 1.x resolves Livewire 3, main Livewire 4.
-      # The `lowest` leg is what proves the declared floors are real — every one of them.
       - name: Install dependencies
         run: >
           composer update --prefer-dist --no-interaction --no-progress
           ${{ matrix.deps == 'lowest' && '--prefer-lowest --prefer-stable' || '' }}
+
+      - name: Run tests
+        run: vendor/bin/pest
+
+  # The package drives Livewire's internal hook pipeline, which carries no BC promise. This job is
+  # the early warning that a Livewire minor moved something — it is allowed to fail.
+  canary:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+
+    name: livewire dev
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          coverage: none
+
+      - name: Install Livewire from its development branch
+        run: |
+          composer config minimum-stability dev
+          composer config prefer-stable true
+          composer require "livewire/livewire:4.x-dev" --no-interaction --no-update
+          composer update --prefer-dist --no-interaction --no-progress
 
       - name: Run tests
         run: vendor/bin/pest
@@ -58,3 +98,6 @@ jobs:
 
       - name: Check formatting
         run: vendor/bin/pint --test
+
+      - name: Static analysis
+        run: vendor/bin/phpstan analyse --no-progress

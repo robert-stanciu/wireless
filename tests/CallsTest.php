@@ -89,16 +89,16 @@ it('rethrows the validator own exception, not a rebuilt one', function () {
 });
 
 it('forgets what the previous call returned when a later one throws', function () {
-    Wireless::run(Broadcaster::class, [], function ($broadcaster) {
-        $broadcaster->call('nothing');
+    Wireless::run(Counter::class, ['start' => 0], function ($counter) {
+        expect($counter->call('increment', 3)->returned())->toBe(3);
 
         try {
-            $broadcaster->call('explode');
-        } catch (RuntimeException) {
+            $counter->call('doesNotExist');
+        } catch (MethodNotFoundException) {
             // expected
         }
 
-        expect($broadcaster->returned())->toBeNull();
+        expect($counter->returned())->toBeNull();
     });
 });
 
@@ -115,7 +115,7 @@ it('lets the component dispatch to the browser', function () {
     Wireless::run(Broadcaster::class, [], function ($broadcaster) {
         $broadcaster->call('announce', 'ready');
 
-        $dispatches = $broadcaster->dispatches();
+        $dispatches = $broadcaster->dispatched();
 
         expect($dispatches)->toHaveCount(1)
             ->and($dispatches[0]['name'])->toBe('announced')

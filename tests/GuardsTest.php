@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-use RobertStanciu\Wireless\Exceptions\ComponentNotMounted;
+use RobertStanciu\Wireless\Exceptions\ComponentNotMountedException;
 use RobertStanciu\Wireless\Facades\Wireless;
 use RobertStanciu\Wireless\Tests\Fixtures\Counter;
 use RobertStanciu\Wireless\Tests\Fixtures\Traveller;
@@ -11,7 +11,7 @@ it('says so when a component was never mounted', function (Closure $use) {
     $driver = Wireless::component(Counter::class);
 
     expect(fn () => $use($driver))
-        ->toThrow(ComponentNotMounted::class, 'has not been mounted');
+        ->toThrow(ComponentNotMountedException::class, 'has not been mounted');
 })->with([
     'set' => [fn ($driver) => $driver->set('count', 1)],
     'get' => [fn ($driver) => $driver->get('count')],
@@ -20,16 +20,20 @@ it('says so when a component was never mounted', function (Closure $use) {
     'effects' => [fn ($driver) => $driver->effects()],
     'instance' => [fn ($driver) => $driver->instance()],
     'dispatch' => [fn ($driver) => $driver->dispatch('anything')],
+    'redirect' => [fn ($driver) => $driver->redirect()],
+    'dispatched' => [fn ($driver) => $driver->dispatched()],
+    'errors' => [fn ($driver) => $driver->errors()],
 ]);
 
-it('answers the read-only questions before a mount instead of throwing', function () {
+it('refuses to answer for a cycle that never happened', function () {
     $driver = Wireless::component(Counter::class);
 
+    // an empty bag and a null redirect are what SUCCESS looks like — a caller inspecting a row
+    // that never got as far as a component must not read them as one
     expect($driver->mounted())->toBeFalse()
-        ->and($driver->redirect())->toBeNull()
-        ->and($driver->dispatches())->toBe([])
-        ->and($driver->errors()->isEmpty())->toBeTrue()
-        ->and($driver->returned())->toBeNull();
+        ->and(fn () => $driver->redirect())->toThrow(ComponentNotMountedException::class)
+        ->and(fn () => $driver->dispatched())->toThrow(ComponentNotMountedException::class)
+        ->and(fn () => $driver->errors())->toThrow(ComponentNotMountedException::class);
 });
 
 it('keeps the outcome readable after the cycle is over', function () {
@@ -44,7 +48,7 @@ it('keeps the outcome readable after the cycle is over', function () {
 
 it('names the component in the message, so the trace is not a guessing game', function () {
     expect(fn () => Wireless::component(Counter::class)->get('count'))
-        ->toThrow(ComponentNotMounted::class, Counter::class);
+        ->toThrow(ComponentNotMountedException::class, Counter::class);
 });
 
 it('lets finish() pass quietly when nothing was mounted', function () {

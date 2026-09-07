@@ -34,12 +34,13 @@ composer require robert-stanciu/wireless:^1.0   # Livewire 3
 
 | Wireless | Livewire | Laravel | PHP |
 | --- | --- | --- | --- |
-| `^2.0` | `^4.0` | 12, 13 | 8.2+ |
-| `^1.0` | `^3.0` | 12, 13 | 8.2+ |
+| `^4.0` | `^4.3` | 12, 13 | 8.2+ |
+| `^3.0` | `^3.8` | 12, 13 | 8.2+ |
 
-You are reading the `2.x` line (Livewire 4). The two majors exist because Livewire changed the
-signatures of the `mount` and `call` hooks; the package API is identical on both, and features ship
-to both lines at once.
+**The package major is the Livewire major** — Wireless 4 drives Livewire 4, Wireless 3 drives
+Livewire 3. You are reading the `main` line (Livewire 4). The two lines exist because Livewire moved
+the `mount` and `call` hook signatures between majors; the package API is the same on both from
+v3.0.0 / v4.0.0 on, and features ship to both lines together.
 
 **Which one do I want?**
 
@@ -83,21 +84,60 @@ $driver->get('email');                           // dotted paths work: 'form.lin
 
 $driver->call('save', $argument);                // hooks, wire:model state, validation
 $driver->returned();                             // what save() returned
+$driver->dispatch('order-placed', reference: 'INV-1');  // deliver an event to its listeners
+                                                 // (a call like any other: returned() is the listener's)
 
-$driver->dispatch('order-placed', reference: 'INV-1');  // deliver an event to its own listeners
-$driver->actingAs($user);                        // for this cycle; the previous user is put back
-$driver->tap(fn ($d) => logger($d->get('total')));
 $driver->errors();                               // the component's MessageBag
 $driver->redirect();                             // '/dashboard', or null
-$driver->dispatches();                           // [['name' => 'saved', 'params' => [...]], ...]
-$driver->effects();                              // whatever Livewire has already written to the context
+$driver->dispatched();                           // [['name' => 'saved', 'params' => [...]], ...]
 $driver->instance();                             // the component itself
+$driver->mounted();                              // is a cycle open?
 
-$driver->finish();                               // destroy hooks + flush state (idempotent)
+$driver->finish();                               // destroy hooks, and the shared state Livewire
+                                                 // swapped (idempotent)
 ```
 
 Outside `run()`, **`finish()` is yours to call** — until then Livewire's per-request state stays
 loaded and the container keeps Livewire's redirector.
+
+**The outcome outlives the component.** `run()` returns whatever the callback returned, but the
+driver it built is finished by then — so `errors()`, `redirect()`, `dispatched()` and `returned()`
+keep answering from the finished cycle, while `get()`, `set()`, `call()` and `instance()` throw
+`ComponentNotMountedException`. Reading them on a driver that was never mounted throws too: an
+empty bag would otherwise read exactly like a clean save.
+
+```php
+$driver = Wireless::component(ImportRow::class);
+
+foreach ($rows as $row) {
+    try {
+        $driver->mount()->set($row)->call('save');
+    } catch (ValidationException) {
+        $failures[$driver->get('reference')] = $driver->errors()->all();
+    } finally {
+        $driver->finish();   // and the next mount() starts from a clean outcome
+    }
+}
+```
+
+Everything this package throws itself implements `RobertStanciu\Wireless\Exceptions\WirelessException`
+(`ComponentNotMountedException`, `ComponentAlreadyMountedException`, `MissingCallbackException`), so
+`catch (WirelessException)` separates "the driver was used wrong" from "the component failed".
+
+### Acting as a user
+
+A component reads `Auth::user()` during `mount()`, so the user has to be set before the cycle
+starts — that is on the manager, not on the driver:
+
+```php
+Wireless::actingAs($user)->run(CreateInvoice::class, ['company' => $company], fn ($form) => $form
+    ->set('customer_id', $customer->id)
+    ->call('save'));
+```
+
+Whoever was authenticated before is put back when the cycle finishes, so a loop cannot leak one
+row's user into the next. On the fluent path the driver takes it directly —
+`Wireless::component(X::class)->actingAs($user)->mount()` — as long as it comes before `mount()`.
 
 ### Validation
 
@@ -126,18 +166,32 @@ so `$e->validator->failed()` still tells you which rules failed — unless the c
   part of the picture — and a broken view will not be caught here. Reach for `Livewire::test()`
   (assertions against HTML) or a real request when you need the view.
 - **No client round trip.** There is no snapshot, no checksum, no `wire:navigate`. Nothing is
-  serialised between calls, so the component keeps object identity — checksum and `#[Locked]`
-  violations that only a round trip could surface will not appear.
+  serialised between calls, so the component keeps object identity. `#[Locked]` is still enforced
+  on `set()`; what cannot surface is tampering with a serialised payload, because there is no
+  payload to tamper with.
+- **Overlapping drivers share one `redirect` binding.** Two cycles open at once are not something
+  Livewire itself ever does; a redirect issued through the `redirect()` helper while both are open
+  lands on whichever mounted last. `$this->redirect(...)` from inside the component — the normal
+  way — is unaffected, and nesting (`run()` inside `run()`) is fine.
 - **No `dehydrate`.** That hook turns a redirect into `abort(redirect(...))` outside a Livewire
   request, so the cycle deliberately stops before it. The consequence: `#[Session]` and `#[Url]`
   properties are not persisted, and `$this->download()` produces no effect — read `redirect()` and
-  `dispatches()` instead, which come from the same place Livewire reads them.
-- **Values are assigned, not hydrated from the wire.** `set('date', '2025-01-01')` on a
-  `public Carbon $date` assigns the string; a browser update would run it through the synthesizers
-  first. Pass real PHP values (`set('date', now())`).
+  `dispatched()` instead, which come from the same place Livewire reads them.
+- **`set()` applies one key at a time.** Each write runs its own `updated` hooks before the next
+  key is written — the shape `Livewire::test()->set([...])` produces, not the batched one a single
+  browser payload produces (there, every value is written first and the hooks run afterwards). It
+  matters only when a hook touches another property being set in the same call.
 - **Lazy components mount eagerly**, per cycle — the mount is told `lazy: false` the way
   `<livewire:x :lazy="false">` does, so Livewire's global switch is left alone. There is no browser
   to come back for the real component after a placeholder.
+
+## Compatibility
+
+Wireless drives Livewire's internal hook pipeline — `trigger('mount')`, `trigger('call')`, the
+component and redirector stacks. None of that carries a backwards-compatibility promise, which is
+why the Livewire constraint is deliberately narrow (`^4.3`, the version the internals were verified
+against) rather than the whole major. CI additionally runs the suite against Livewire's development
+branch as a canary, so a moved internal shows up here before it shows up in your application.
 
 ## Tested against the real thing
 

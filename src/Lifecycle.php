@@ -5,11 +5,16 @@ declare(strict_types=1);
 namespace RobertStanciu\Wireless;
 
 use Closure;
+use Illuminate\Auth\AuthManager;
 use Livewire\Component;
 use Livewire\Features\SupportAutoInjectedAssets\SupportAutoInjectedAssets;
+use Livewire\Features\SupportLazyLoading\SupportLazyLoading;
 use Livewire\Features\SupportRedirects\SupportRedirects;
+use Livewire\Livewire;
+use Livewire\Mechanisms\FrontendAssets\FrontendAssets;
 use Livewire\Mechanisms\HandleComponents\ComponentContext;
 use Livewire\Mechanisms\HandleComponents\HandleComponents;
+use ReflectionProperty;
 
 use function Livewire\trigger;
 
@@ -28,9 +33,11 @@ final class Lifecycle
     public const LIVEWIRE_MAJOR = 4;
 
     /**
-     * `lazy`/`defer` are reserved mount params: passing them false is how Blade writes
-     * `<livewire:x :lazy="false">`, and it keeps this cycle from mounting a placeholder without
-     * touching Livewire's global lazy-loading switch.
+     * There is no browser to come back for a lazy component, so the placeholder is skipped —
+     * through Livewire's own switch, restored immediately afterwards. Injecting `lazy: false` into
+     * the params instead would reach the component: Livewire writes matching public properties from
+     * that array and forwards the rest to `mount()`, so a `$defer` property, a `mount($lazy = …)`
+     * default or a variadic `mount(...$args)` would all be corrupted by the flags.
      *
      * @param  array<string, mixed>  $params
      * @param  Component|false|null  $parent  whatever `app('livewire')->current()` handed back
@@ -38,7 +45,15 @@ final class Lifecycle
      */
     public static function mount(Component $component, array $params, mixed $parent): Closure
     {
-        return trigger('mount', $component, ['lazy' => false, 'defer' => false, ...$params], null, $parent, []);
+        $lazyWasDisabled = SupportLazyLoading::$disableWhileTesting;
+
+        SupportLazyLoading::$disableWhileTesting = true;
+
+        try {
+            return trigger('mount', $component, $params, null, $parent, []);
+        } finally {
+            SupportLazyLoading::$disableWhileTesting = $lazyWasDisabled;
+        }
     }
 
     /**
@@ -70,11 +85,16 @@ final class Lifecycle
         HandleComponents::$componentStack[] = $component;
     }
 
-    /** Only ever pops what this cycle pushed — a hook that threw mid-mount may have left nothing. */
+    /**
+     * Remove this cycle's component wherever it sits — drivers finished out of order would
+     * otherwise strand it, and Livewire hands whatever is on top to the next mount as its parent.
+     */
     public static function popComponent(Component $component): void
     {
-        if (end(HandleComponents::$componentStack) === $component) {
-            array_pop(HandleComponents::$componentStack);
+        $index = array_search($component, HandleComponents::$componentStack, true);
+
+        if ($index !== false) {
+            array_splice(HandleComponents::$componentStack, $index, 1);
         }
     }
 
@@ -112,9 +132,14 @@ final class Lifecycle
     public static function updateProperties(Component $component, ComponentContext $context, array $values): void
     {
         $handler = app(HandleComponents::class);
+        $synths = new ReflectionProperty($handler, 'synths');
 
         foreach ($values as $path => $value) {
-            $finish = $handler->updateProperty($component, $path, $value, $context);
+            // hydrateForUpdate is what turns '2025-01-01' into a Carbon and 'live' into a backed
+            // enum; without it a typed property assignment aborts with a bare 419
+            $hydrated = $synths->getValue($handler)->hydrateForUpdate([], $path, $value, $context);
+
+            $finish = $handler->updateProperty($component, $path, $hydrated, $context);
 
             $finish();
         }
@@ -125,20 +150,75 @@ final class Lifecycle
      * pops it in `dehydrate` — the one hook this cycle must never run. Without this the stack grows
      * for every component a long-running worker drives.
      */
-    public static function popRedirectorStack(): void
+    /**
+     * Unwind to a known depth, putting each popped redirector back as Livewire's `dehydrate` would
+     * — popping without rebinding leaves the container pointing at a finished component's
+     * Redirector, so a redirect from the cycle that OWNS the request goes nowhere.
+     */
+    public static function unwindRedirectorsTo(int $depth): void
     {
-        array_pop(SupportRedirects::$redirectorCacheStack);
+        while (count(SupportRedirects::$redirectorCacheStack) > $depth) {
+            app()->instance('redirect', array_pop(SupportRedirects::$redirectorCacheStack));
+        }
     }
 
     /**
-     * Put the application's redirector back. `instance()` alone would leave Livewire's `bind()`
-     * shadowed but present, so a container flush (Octane, a test) would resurrect a Redirector
-     * pointing at a component that no longer exists.
+     * How `redirect` was registered before Livewire swapped it: the binding as well as the resolved
+     * instance. Restoring only the instance would leave Livewire's own `bind()` in place, ready to
+     * resurrect a Redirector pointing at a finished component the next time the container is
+     * flushed; restoring a closure over the instance would demote Laravel's singleton to a frozen
+     * object holding this request's session.
+     *
+     * @return array{instance: mixed, binding: array<string, mixed>|null}
      */
-    public static function restoreRedirector(mixed $redirector): void
+    public static function captureRedirector(): array
     {
-        app()->bind('redirect', fn () => $redirector);
+        return [
+            'instance' => app('redirect'),
+            'binding' => app()->getBindings()['redirect'] ?? null,
+        ];
+    }
 
-        app()->instance('redirect', $redirector);
+    /** @param  array{instance: mixed, binding: array<string, mixed>|null}|null  $redirector */
+    public static function restoreRedirector(?array $redirector): void
+    {
+        if ($redirector === null) {
+            return;
+        }
+
+        if ($redirector['binding'] !== null) {
+            $bindings = new ReflectionProperty(app(), 'bindings');
+
+            $all = $bindings->getValue(app());
+            $all['redirect'] = $redirector['binding'];
+
+            $bindings->setValue(app(), $all);
+        }
+
+        app()->instance('redirect', $redirector['instance']);
+    }
+
+    /** Is Livewire's own per-request state in use — a render in flight, or an update request? */
+    public static function livewireIsBusy(): bool
+    {
+        return self::componentsInFlight() > 0
+            || self::aComponentHasRendered()
+            || app(FrontendAssets::class)->hasRenderedScripts
+            || app(FrontendAssets::class)->hasRenderedStyles
+            || Livewire::isLivewireRequest();
+    }
+
+    /** Drops one guard's resolved instance; forgetGuards() would drop every other guard too. */
+    public static function forgetGuard(string $name): void
+    {
+        $manager = app(AuthManager::class);
+
+        $guards = new ReflectionProperty($manager, 'guards');
+
+        $resolved = $guards->getValue($manager);
+
+        unset($resolved[$name]);
+
+        $guards->setValue($manager, $resolved);
     }
 }
