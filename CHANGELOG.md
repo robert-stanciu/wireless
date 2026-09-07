@@ -12,6 +12,11 @@ spoken for.
 
 ## [Unreleased]
 
+## [3.0.0] · [4.0.0] — 2026-09-07
+
+The two lines are renumbered onto Livewire's major: this is what `v1.1.0` (Livewire 3) and `v2.1.0`
+(Livewire 4) grew into. Those tags stay where they are; nothing that pinned them changes.
+
 ### Added
 - `Wireless::actingAs($user)` — drives the next cycle as that user, from before the mount (which is
   where a component reads `Auth::user()`), and puts the previous one back when it finishes.
@@ -122,7 +127,9 @@ spoken for.
 - `ComponentDriver`: `mount()`, `set()`, `get()`, `call()`, `returned()`, `errors()`,
   `keepValidationErrors()`, `redirect()`, `effects()`, `instance()`, `finish()`.
 
-[Unreleased]: https://github.com/robert-stanciu/wireless/compare/v2.1.0...main
+[Unreleased]: https://github.com/robert-stanciu/wireless/compare/v4.0.0...main
+[4.0.0]: https://github.com/robert-stanciu/wireless/releases/tag/v4.0.0
+[3.0.0]: https://github.com/robert-stanciu/wireless/releases/tag/v3.0.0
 [2.1.0]: https://github.com/robert-stanciu/wireless/releases/tag/v2.1.0
 [1.1.0]: https://github.com/robert-stanciu/wireless/releases/tag/v1.1.0
 [2.0.0]: https://github.com/robert-stanciu/wireless/releases/tag/v2.0.0
