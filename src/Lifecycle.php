@@ -14,15 +14,14 @@ use function Livewire\trigger;
  * The two Livewire hooks whose signatures move between major versions, kept in one class so a
  * release for another Livewire major differs by this file alone.
  *
- * This is the Livewire 4 shape: `mount` takes the html attributes and `call` takes the client
- * metadata and the call index. Both are passed POSITIONALLY to every registered hook, so a missing
- * argument is an ArgumentCountError rather than a quietly skipped hook.
+ * This is the Livewire 3 shape. Livewire 4 widened both: `mount` gained the html attributes and
+ * `call` gained the client metadata and the call index — see the 2.x line of this package.
  *
  * @internal
  */
 final class Lifecycle
 {
-    public const LIVEWIRE_MAJOR = 4;
+    public const LIVEWIRE_MAJOR = 3;
 
     /**
      * @param  array<string, mixed>  $params
@@ -31,7 +30,7 @@ final class Lifecycle
      */
     public static function mount(Component $component, array $params, mixed $parent): Closure
     {
-        return trigger('mount', $component, $params, null, $parent, []);
+        return trigger('mount', $component, $params, null, $parent);
     }
 
     /**
@@ -46,7 +45,7 @@ final class Lifecycle
         ComponentContext $context,
         Closure $returnEarly,
     ): Closure {
-        return trigger('call', $component, $method, $params, $context, $returnEarly, [], 0);
+        return trigger('call', $component, $method, $params, $context, $returnEarly);
     }
 
     public static function destroy(Component $component, ComponentContext $context): void

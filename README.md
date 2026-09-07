@@ -28,8 +28,10 @@ composer require robert-stanciu/wireless
 
 | Wireless | Livewire |
 | --- | --- |
-| `^2.0` | `^4.0` |
 | `^1.0` | `^3.0` |
+| `^2.0` | `^4.0` |
+
+You are reading the `1.x` line (Livewire 3).
 
 The two majors exist because Livewire changed the signatures of the `mount` and `call` hooks; the
 package API is identical on both.
