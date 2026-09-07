@@ -149,14 +149,29 @@ class ComponentDriver
     }
 
     /**
-     * Effects Livewire recorded for the browser (`redirect`, `dispatches`, …) — the same payload a
-     * real request would have returned.
+     * Whatever Livewire has already written to the response context. Most effects — redirects,
+     * dispatches — are only added during `dehydrate`, which this cycle never runs, so prefer
+     * redirect() and dispatches(); this is here for hooks that record theirs earlier.
      *
      * @return array<string, mixed>
      */
     public function effects(): array
     {
         return $this->context()->effects;
+    }
+
+    /**
+     * Events the component dispatched to the browser, oldest first, in the shape a response would
+     * have carried them: `['name' => 'saved', 'params' => [...]]`.
+     *
+     * @return array<int, array{name: string, params: array<array-key, mixed>}>
+     */
+    public function dispatches(): array
+    {
+        return array_map(
+            fn (object $event): array => $event->serialize(),
+            store($this->component())->get('dispatched', []),
+        );
     }
 
     /**
