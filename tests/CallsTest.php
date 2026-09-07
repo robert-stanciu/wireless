@@ -7,9 +7,12 @@ use Livewire\Exceptions\MethodNotFoundException;
 use RobertStanciu\Wireless\Facades\Wireless;
 use RobertStanciu\Wireless\Tests\Fixtures\Broadcaster;
 use RobertStanciu\Wireless\Tests\Fixtures\Counter;
+use RobertStanciu\Wireless\Tests\Fixtures\Downloader;
 use RobertStanciu\Wireless\Tests\Fixtures\Injected;
 use RobertStanciu\Wireless\Tests\Fixtures\Listener;
+use RobertStanciu\Wireless\Tests\Fixtures\LiveValidated;
 use RobertStanciu\Wireless\Tests\Fixtures\Signup;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 
 it('calls a method and keeps what it returned', function () {
     Wireless::run(Counter::class, ['start' => 1], function ($counter) {
@@ -187,5 +190,43 @@ it('drives a form object end to end', function () {
 it('has an empty error bag until something fails', function () {
     Wireless::run(Signup::class, [], function ($signup) {
         expect($signup->errors()->isEmpty())->toBeTrue();
+    });
+});
+
+it('does not lose a validation failure an updated hook produced', function () {
+    Wireless::run(LiveValidated::class, [], function ($form) {
+        // Livewire swallows the hook's failure into the bag; save() validates nothing, so without
+        // carrying the failure forward the row would import as "saved" with a bad address
+        expect(fn () => $form->set('email', 'not-an-email')->call('save'))
+            ->toThrow(ValidationException::class);
+    });
+});
+
+it('lets a good value through the same hook', function () {
+    $saved = Wireless::run(LiveValidated::class, [], fn ($form) => $form
+        ->set('email', 'ada@example.com')
+        ->call('save')
+        ->returned());
+
+    expect($saved)->toBe('saved: ada@example.com');
+});
+
+it('keeps an updated hook failure in the bag when asked to', function () {
+    Wireless::run(LiveValidated::class, [], function ($form) {
+        $form->keepValidationErrors()->set('email', 'nope')->call('save');
+
+        expect($form->errors()->has('email'))->toBeTrue()
+            ->and($form->returned())->toBe('saved: nope');
+    });
+});
+
+it('hands back a file response instead of swallowing it', function () {
+    // the download EFFECT needs dehydrate, which this cycle never runs — but the response a method
+    // returns is the caller's to stream or store
+    Wireless::run(Downloader::class, [], function ($downloader) {
+        $response = $downloader->call('export')->returned();
+
+        expect($response)->toBeInstanceOf(StreamedResponse::class)
+            ->and($response->headers->get('Content-Type'))->toBe('text/csv');
     });
 });

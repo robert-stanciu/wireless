@@ -15,10 +15,8 @@ spoken for.
 ### Added
 - `Wireless::actingAs($user)` — drives the next cycle as that user, from before the mount (which is
   where a component reads `Auth::user()`), and puts the previous one back when it finishes.
-- `dispatch()` delivers an event to the component's own listeners; `tap()` (via Laravel's
-  `Tappable`) and `mounted()` round out the chain; `throwValidationErrors()` undoes
-  `keepValidationErrors()`.
-- `ComponentDriver` is `Macroable`, so an application can add its own chain steps.
+- `dispatch()` delivers an event to the component's own listeners; `mounted()` rounds out the
+  chain; `throwValidationErrors()` undoes `keepValidationErrors()`.
 - The outcome of a cycle — `errors()`, `redirect()`, `dispatched()`, `returned()` — stays readable
   after `finish()`, so `run()`'s driver is still worth holding on to.
 - Every exception this package throws implements `Exceptions\WirelessException`.
@@ -31,8 +29,11 @@ spoken for.
 - **Breaking:** mounting a driver that is already mounted throws `ComponentAlreadyMountedException`
   instead of quietly replacing the component; reading `errors()`, `redirect()` or `dispatched()` on
   a driver that was never mounted throws instead of answering as though the cycle had succeeded.
-- `effects()` is `@internal`: everything it used to be reached for is now on `redirect()` and
-  `dispatched()`.
+- **Breaking:** `effects()` is gone. Effects are only written during `dehydrate`, which this cycle
+  never runs, so it answered `[]` for every real cycle — `redirect()` and `dispatched()` read the
+  place Livewire actually keeps them, and `returned()` hands back a file response as it is.
+- **Breaking:** `returned()` on a driver that was never mounted throws instead of answering `null`,
+  which is what a method returning nothing gives back.
 - Support Laravel 13 alongside 12 (`illuminate/*: ^12.0|^13.0`), which is the range Livewire itself
   declares.
 - `illuminate/validation`, `illuminate/auth` and `illuminate/contracts` are required explicitly:
@@ -41,14 +42,31 @@ spoken for.
   rather than the whole major — it drives hooks that carry no BC promise.
 - `Wireless::run()` takes the callback as its second argument when there are no mount parameters:
   `run(Counter::class, fn ($c) => …)`.
-- CI runs a `--prefer-lowest` leg, so the declared floors are actually proven, and lints in its own
-  job (`composer validate --strict` + `pint --test`) instead of once per PHP version.
 - The dist archive ships `src/`, the README, the changelog and the licence (`.gitattributes`
   export-ignores the rest).
 - CI runs a `--prefer-lowest` leg on the floor PHP, PHPStan (level 6), `composer validate --strict`,
   the suite in random order, and a `continue-on-error` canary against Livewire's dev branch.
+- A validation failure raised by an `updated` hook is carried to the next call instead of being
+  wiped by it — `set()` filling a form field by field no longer loses `validateOnly()` failures.
 
 ### Fixed
+- **A `flush-state` while a cycle was open poisoned `redirect` for the life of the process.**
+  Livewire's own test harness flushes after every render; the cycle's snapshot was dropped with it,
+  so every later `redirect()` in the process resolved a `Redirector` pinned to a destroyed
+  component. The snapshot is handed back before the bookkeeping goes.
+- **A teardown could hand the container Laravel's redirector while a component of the surrounding
+  request still owned one**, silently sending that component's redirect nowhere. The application's
+  redirector goes back only once no frame is left in flight.
+- **Redirector frames are released by identity, not by position.** Drivers finished out of order
+  renumbered the stack under one another, so a still-open cycle could lose its own frame.
+- **`Livewire::flushState()` no longer runs from a destructor**, which fires at a moment nothing
+  chose — including the middle of somebody else's render — and the "is Livewire busy?" question is
+  asked again at teardown rather than only at mount.
+- **A throwing `flush-state` listener no longer replaces the caller's own exception**: the flush is
+  the last teardown step and is rescued like the rest of them.
+- **Two cycles acting on one guard, or one cycle acting twice, put the application's user back.**
+  The previous user is tracked per guard across cycles instead of per driver, so drivers finished in
+  mount order no longer restore each other's acting user.
 - **A component whose `mount()` threw left the container's `redirect` binding swapped and lazy
   loading disabled for the rest of the process.** The mount now happens inside the guarded region.
 - The redirector is restored by rebinding rather than shadowing, so a container flush can no longer

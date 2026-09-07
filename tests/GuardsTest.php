@@ -17,7 +17,7 @@ it('says so when a component was never mounted', function (Closure $use) {
     'get' => [fn ($driver) => $driver->get('count')],
     'call' => [fn ($driver) => $driver->call('increment')],
     'set (array form)' => [fn ($driver) => $driver->set(['count' => 1])],
-    'effects' => [fn ($driver) => $driver->effects()],
+    'returned' => [fn ($driver) => $driver->returned()],
     'instance' => [fn ($driver) => $driver->instance()],
     'dispatch' => [fn ($driver) => $driver->dispatch('anything')],
     'redirect' => [fn ($driver) => $driver->redirect()],

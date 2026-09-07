@@ -6,7 +6,7 @@ namespace RobertStanciu\Wireless\Tests\Fixtures;
 
 use Livewire\Component;
 
-/** An updated hook that overwrites another property — only correct when updates are batched. */
+/** An updated hook that overwrites another property, so the order of writes and hooks is visible. */
 class Cascading extends Component
 {
     public string $country = '';

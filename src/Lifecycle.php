@@ -14,6 +14,7 @@ use Livewire\Livewire;
 use Livewire\Mechanisms\FrontendAssets\FrontendAssets;
 use Livewire\Mechanisms\HandleComponents\ComponentContext;
 use Livewire\Mechanisms\HandleComponents\HandleComponents;
+use Livewire\Mechanisms\HandleSynths\HandleSynths;
 use ReflectionProperty;
 
 use function Livewire\trigger;
@@ -132,12 +133,12 @@ final class Lifecycle
     public static function updateProperties(Component $component, ComponentContext $context, array $values): void
     {
         $handler = app(HandleComponents::class);
-        $synths = new ReflectionProperty($handler, 'synths');
+        $synths = app(HandleSynths::class);
 
         foreach ($values as $path => $value) {
             // hydrateForUpdate is what turns '2025-01-01' into a Carbon and 'live' into a backed
             // enum; without it a typed property assignment aborts with a bare 419
-            $hydrated = $synths->getValue($handler)->hydrateForUpdate([], $path, $value, $context);
+            $hydrated = $synths->hydrateForUpdate([], $path, $value, $context);
 
             $finish = $handler->updateProperty($component, $path, $hydrated, $context);
 
@@ -146,20 +147,42 @@ final class Lifecycle
     }
 
     /**
-     * SupportRedirects::boot() pushes the application's redirector onto a static stack and only
-     * pops it in `dehydrate` — the one hook this cycle must never run. Without this the stack grows
-     * for every component a long-running worker drives.
+     * The frame SupportRedirects::boot() pushed for this cycle — the redirector ITSELF, not its
+     * position: releasing a frame renumbers everything above it, so an index recorded at mount
+     * points at somebody else's frame by the time this cycle ends.
      */
-    /**
-     * Unwind to a known depth, putting each popped redirector back as Livewire's `dehydrate` would
-     * — popping without rebinding leaves the container pointing at a finished component's
-     * Redirector, so a redirect from the cycle that OWNS the request goes nowhere.
-     */
-    public static function unwindRedirectorsTo(int $depth): void
+    public static function currentRedirectorFrame(int $depthBefore): mixed
     {
-        while (count(SupportRedirects::$redirectorCacheStack) > $depth) {
-            app()->instance('redirect', array_pop(SupportRedirects::$redirectorCacheStack));
+        return SupportRedirects::$redirectorCacheStack[$depthBefore] ?? null;
+    }
+
+    /**
+     * Remove one cycle's frame, putting the redirector back as Livewire's `dehydrate` would — but
+     * only when the frame is the top one. Rebinding from underneath would tear down a cycle that is
+     * still open whenever drivers finish out of order (or a destructor fires late), and its
+     * component would then redirect into a container that no longer points at it.
+     */
+    public static function unwindRedirector(mixed $frame): void
+    {
+        if ($frame === null) {
+            return;
         }
+
+        $index = array_search($frame, SupportRedirects::$redirectorCacheStack, true);
+
+        if ($index === false) {
+            return;
+        }
+
+        if ($index === array_key_last(SupportRedirects::$redirectorCacheStack)) {
+            array_pop(SupportRedirects::$redirectorCacheStack);
+
+            app()->instance('redirect', $frame);
+
+            return;
+        }
+
+        array_splice(SupportRedirects::$redirectorCacheStack, $index, 1);
     }
 
     /**
@@ -167,9 +190,9 @@ final class Lifecycle
      * instance. Restoring only the instance would leave Livewire's own `bind()` in place, ready to
      * resurrect a Redirector pointing at a finished component the next time the container is
      * flushed; restoring a closure over the instance would demote Laravel's singleton to a frozen
-     * object holding this request's session.
+     * object holding one request's session.
      *
-     * @return array{instance: mixed, binding: array<string, mixed>|null}
+     * @return array{instance: mixed, binding: array{concrete: mixed, shared: bool}|null}
      */
     public static function captureRedirector(): array
     {
@@ -179,7 +202,7 @@ final class Lifecycle
         ];
     }
 
-    /** @param  array{instance: mixed, binding: array<string, mixed>|null}|null  $redirector */
+    /** @param  array{instance: mixed, binding: array{concrete: mixed, shared: bool}|null}|null  $redirector */
     public static function restoreRedirector(?array $redirector): void
     {
         if ($redirector === null) {
@@ -187,12 +210,7 @@ final class Lifecycle
         }
 
         if ($redirector['binding'] !== null) {
-            $bindings = new ReflectionProperty(app(), 'bindings');
-
-            $all = $bindings->getValue(app());
-            $all['redirect'] = $redirector['binding'];
-
-            $bindings->setValue(app(), $all);
+            app()->bind('redirect', $redirector['binding']['concrete'], $redirector['binding']['shared']);
         }
 
         app()->instance('redirect', $redirector['instance']);

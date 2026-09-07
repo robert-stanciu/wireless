@@ -9,12 +9,13 @@ use Livewire\Exceptions\ComponentNotFoundException;
 use Livewire\Features\SupportLifecycleHooks\DirectlyCallingLifecycleHooksNotAllowedException;
 use Livewire\Features\SupportRedirects\Redirector;
 use Livewire\Features\SupportRedirects\SupportRedirects;
+use Livewire\Livewire;
 use Livewire\Mechanisms\HandleComponents\HandleComponents;
-use ReflectionProperty;
 use RobertStanciu\Wireless\Exceptions\ComponentAlreadyMountedException;
 use RobertStanciu\Wireless\Facades\Wireless;
 use RobertStanciu\Wireless\Tests\Fixtures\Counter;
 use RobertStanciu\Wireless\Tests\Fixtures\Exploding;
+use RobertStanciu\Wireless\Tests\Fixtures\HelperRedirect;
 use RobertStanciu\Wireless\Tests\Fixtures\Leaky;
 use RobertStanciu\Wireless\Tests\Fixtures\Signup;
 use RobertStanciu\Wireless\Tests\Fixtures\Traveller;
@@ -215,4 +216,96 @@ it('gives the shared state back when a driver is dropped without finishing', fun
     // life of the process, so no later cycle would ever restore the redirector again
     expect(app('redirect'))->toBe($before)
         ->and(HandleComponents::$componentStack)->toBe([]);
+});
+
+it('leaves a still-open cycle able to redirect through the helper', function () {
+    $first = Wireless::component(HelperRedirect::class)->mount();
+    $second = Wireless::component(HelperRedirect::class)->mount();
+
+    // the first driver finishing must not take the second one's redirector with it
+    $first->finish();
+
+    $second->call('leave');
+
+    expect($second->redirect())->toEndWith('/through-the-helper');
+
+    $second->finish();
+});
+
+it('does not strand an open cycle when livewire flushes its own state', function () {
+    $before = app('redirect');
+
+    $driver = Wireless::component(Counter::class)->mount();
+
+    // Livewire's test harness flushes after every render, and a cycle may be open across it
+    Livewire::flushState();
+
+    $driver->finish();
+
+    expect(app('redirect'))->toBe($before);
+});
+
+it('puts the application user back after acting as two users in turn', function () {
+    $original = new User;
+    $original->id = 1;
+    auth()->setUser($original);
+
+    $driver = Wireless::component(Counter::class)
+        ->actingAs(tap(new User, fn ($u) => $u->id = 2))
+        ->actingAs(tap(new User, fn ($u) => $u->id = 3))
+        ->mount();
+
+    expect(auth()->id())->toBe(3);
+
+    $driver->finish();
+
+    // switching twice is still ONE cycle: the first acting user must not become "the previous one"
+    expect(auth()->user())->toBe($original);
+});
+
+it('puts the application user back when two cycles act on the same guard', function () {
+    $original = new User;
+    $original->id = 1;
+    auth()->setUser($original);
+
+    $first = Wireless::component(Counter::class)->actingAs(tap(new User, fn ($u) => $u->id = 2))->mount();
+    $second = Wireless::component(Counter::class)->actingAs(tap(new User, fn ($u) => $u->id = 3))->mount();
+
+    // finished in MOUNT order: the first one must not put its own predecessor (user 2) back
+    $first->finish();
+    $second->finish();
+
+    expect(auth()->user())->toBe($original);
+});
+
+it('keeps the callers exception when a flush-state listener throws', function () {
+    $stopListening = \Livewire\on('flush-state', function (): void {
+        throw new LogicException('the flush listener blew up');
+    });
+
+    try {
+        expect(fn () => Wireless::run(Counter::class, [], function (): void {
+            throw new RuntimeException('the real failure');
+        }))->toThrow(RuntimeException::class, 'the real failure');
+
+        // and a clean cycle still comes back clean
+        expect(Wireless::run(Counter::class, [], fn ($counter) => $counter->call('increment')->get('count')))
+            ->toBe(1);
+    } finally {
+        $stopListening();
+    }
+});
+
+it('leaves every still-open cycle its own redirector when one in the middle finishes', function () {
+    $drivers = collect(range(1, 4))->map(fn () => Wireless::component(Traveller::class)->mount());
+
+    // finished in mount order, which renumbers the stack under everyone still open
+    $drivers->take(3)->each(fn ($driver) => $driver->finish());
+
+    $last = $drivers->last();
+
+    expect(SupportRedirects::$redirectorCacheStack)->toHaveCount(1)
+        ->and($last->call('toPath')->redirect())->toBe('/somewhere');
+
+    $last->finish();
 });

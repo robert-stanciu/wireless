@@ -28,8 +28,8 @@ Livewire:
 ```bash
 composer config repositories.wireless vcs https://github.com/robert-stanciu/wireless
 
-composer require robert-stanciu/wireless:^2.0   # Livewire 4
-composer require robert-stanciu/wireless:^1.0   # Livewire 3
+composer require robert-stanciu/wireless:^4.0   # Livewire 4
+composer require robert-stanciu/wireless:^3.0   # Livewire 3
 ```
 
 | Wireless | Livewire | Laravel | PHP |
@@ -175,15 +175,26 @@ so `$e->validator->failed()` still tells you which rules failed — unless the c
   way — is unaffected, and nesting (`run()` inside `run()`) is fine.
 - **No `dehydrate`.** That hook turns a redirect into `abort(redirect(...))` outside a Livewire
   request, so the cycle deliberately stops before it. The consequence: `#[Session]` and `#[Url]`
-  properties are not persisted, and `$this->download()` produces no effect — read `redirect()` and
-  `dispatched()` instead, which come from the same place Livewire reads them.
+  properties are not persisted, and the browser effects a response would have carried are never
+  emitted — read `redirect()` and `dispatched()` instead, which come from the same place Livewire
+  reads them. A method that returns a file response is the same story: `returned()` hands back the
+  response object itself, so a caller can stream or store it.
 - **`set()` applies one key at a time.** Each write runs its own `updated` hooks before the next
   key is written — the shape `Livewire::test()->set([...])` produces, not the batched one a single
   browser payload produces (there, every value is written first and the hooks run afterwards). It
   matters only when a hook touches another property being set in the same call.
-- **Lazy components mount eagerly**, per cycle — the mount is told `lazy: false` the way
-  `<livewire:x :lazy="false">` does, so Livewire's global switch is left alone. There is no browser
-  to come back for the real component after a placeholder.
+- **Lazy components mount eagerly.** There is no browser to come back for the real component after
+  a placeholder, so Livewire's own lazy switch is turned off around the mount and restored straight
+  afterwards.
+- **`errors()` is per call; `dispatched()` is per cycle.** A call starts with a clean bag, the way a
+  request does, while dispatched events accumulate until `finish()`.
+- **`get()` uses `data_get()`**, so a path that does not exist and a property that is null both
+  come back as `null` — a renamed property in an import loop reads as an empty column.
+- **A method that returns a `RedirectResponse`** hands it back through `returned()`; Livewire would
+  have turned it into an effect. `$this->redirect(...)` inside the component behaves normally.
+- **`finish()` may reset Livewire's per-request state.** When the last open cycle closes in a
+  console process — and only when Livewire was not already rendering — `Livewire::flushState()`
+  runs, so a long-lived worker starts each unit of work clean.
 
 ## Compatibility
 

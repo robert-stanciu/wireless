@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use Illuminate\Pagination\Paginator;
 use Livewire\Features\SupportAutoInjectedAssets\SupportAutoInjectedAssets;
+use Livewire\Features\SupportRedirects\Redirector;
 use Livewire\Features\SupportRedirects\SupportRedirects;
 use Livewire\Mechanisms\HandleComponents\HandleComponents;
 use RobertStanciu\Wireless\Facades\Wireless;
@@ -92,4 +93,52 @@ it('keeps the callers exception when a destroy hook throws too', function () {
     } finally {
         $stopListening();
     }
+});
+
+it('does not flush livewire state from a destructor that lands mid-render', function () {
+    $flushes = 0;
+
+    $stopListening = Livewire\on('flush-state', function () use (&$flushes): void {
+        $flushes++;
+    });
+
+    try {
+        (function (): void {
+            Wireless::component(Counter::class)->mount()->call('increment');
+        })();
+
+        // the driver was dropped without finish(); by the time PHP frees it, the surrounding
+        // request has started rendering — flushing here would pull that render's state away
+        HandleComponents::$componentStack[] = 'a frame that belongs to the request';
+
+        gc_collect_cycles();
+
+        expect($flushes)->toBe(0)
+            ->and(HandleComponents::$componentStack)->toBe(['a frame that belongs to the request']);
+    } finally {
+        $stopListening();
+        HandleComponents::$componentStack = [];
+    }
+});
+
+it('leaves the redirector alone while a component of the request still owns one', function () {
+    $applicationRedirector = app('redirect');
+
+    $driver = Wireless::component(Counter::class)->mount();
+
+    // the request starts rendering a component of its own AFTER this cycle opened: what
+    // SupportRedirects::boot() does is push the current redirector and bind its own
+    SupportRedirects::$redirectorCacheStack[] = app('redirect');
+    app()->instance('redirect', new Redirector(app('url')));
+
+    $hostRedirector = app('redirect');
+
+    $driver->finish();
+
+    // handing the application's redirector back here would send the host's redirect nowhere
+    expect(app('redirect'))->toBe($hostRedirector);
+
+    // and the host unwinds as it always would
+    array_pop(SupportRedirects::$redirectorCacheStack);
+    app()->instance('redirect', $applicationRedirector);
 });
