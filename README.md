@@ -2,6 +2,11 @@
 
 **Drive Livewire components from PHP — mount, set, call — without an HTTP round trip.**
 
+[![Latest version](https://img.shields.io/packagist/v/robert-stanciu/wireless.svg)](https://packagist.org/packages/robert-stanciu/wireless)
+[![Tests](https://github.com/robert-stanciu/wireless/actions/workflows/tests.yml/badge.svg)](https://github.com/robert-stanciu/wireless/actions/workflows/tests.yml)
+[![PHP](https://img.shields.io/packagist/dependency-v/robert-stanciu/wireless/php.svg)](https://packagist.org/packages/robert-stanciu/wireless)
+[![License](https://img.shields.io/packagist/l/robert-stanciu/wireless.svg)](LICENSE.md)
+
 A Livewire component is an ordinary class, but the parts worth reusing only happen inside
 Livewire's pipeline: `mount()`, `updatedX()` hooks, form objects, computed properties, validation.
 Instantiating the class yourself skips all of it. `Livewire::test()` runs the real thing, but it
@@ -22,15 +27,15 @@ $invoice = Wireless::run(CreateInvoice::class, ['company' => $company], fn ($for
 
 ## Installation
 
-Not on Packagist yet — point Composer at the repository, then pick the line that matches your
-Livewire:
+Pick the line that matches your Livewire:
 
 ```bash
-composer config repositories.wireless vcs https://github.com/robert-stanciu/wireless
-
 composer require robert-stanciu/wireless:^4.0   # Livewire 4
 composer require robert-stanciu/wireless:^3.0   # Livewire 3
 ```
+
+The service provider and the `Wireless` facade are registered by package discovery, so there is
+nothing to publish and nothing to add to `config/app.php`.
 
 | Wireless | Livewire | Laravel | PHP |
 | --- | --- | --- | --- |
