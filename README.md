@@ -35,7 +35,7 @@ composer require robert-stanciu/wireless:^3.0   # Livewire 3
 | Wireless | Livewire | Laravel | PHP |
 | --- | --- | --- | --- |
 | `^4.0` | `^4.3` | 12, 13 | 8.2+ |
-| `^3.0` | `^3.8` | 12, 13 | 8.2+ |
+| `^3.0` | `^3.6` | 12 | 8.2+ |
 
 **The package major is the Livewire major** — Wireless 4 drives Livewire 4, Wireless 3 drives
 Livewire 3. You are reading the `main` line (Livewire 4). The two lines exist because Livewire moved
