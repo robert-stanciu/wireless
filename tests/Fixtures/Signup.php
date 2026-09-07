@@ -27,6 +27,11 @@ class Signup extends Component
         return "saved: {$this->form->name} <{$this->form->email}>";
     }
 
+    public function untouched(): string
+    {
+        return 'nothing to validate';
+    }
+
     /** An error added by hand, not by the validator. */
     public function reject(): void
     {

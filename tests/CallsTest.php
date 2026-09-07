@@ -8,6 +8,7 @@ use RobertStanciu\Wireless\Facades\Wireless;
 use RobertStanciu\Wireless\Tests\Fixtures\Broadcaster;
 use RobertStanciu\Wireless\Tests\Fixtures\Counter;
 use RobertStanciu\Wireless\Tests\Fixtures\Injected;
+use RobertStanciu\Wireless\Tests\Fixtures\Listener;
 use RobertStanciu\Wireless\Tests\Fixtures\Signup;
 
 it('calls a method and keeps what it returned', function () {
@@ -35,15 +36,80 @@ it('resolves action dependencies out of the container', function () {
     });
 });
 
-it('refuses a method the browser could not call either', function () {
-    Wireless::run(Counter::class, [], function ($counter) {
-        expect(fn () => $counter->call('hidden'))->toThrow(MethodNotFoundException::class);
+it('refuses a method the browser could not call either', function (string $method) {
+    Wireless::run(Counter::class, [], function ($counter) use ($method) {
+        expect(fn () => $counter->call($method))->toThrow(MethodNotFoundException::class);
     });
 })->with([
     'protected' => 'hidden',
     'missing' => 'doesNotExist',
     'render' => 'render',
 ]);
+
+it('does not re-throw an earlier failure from a later, clean call', function () {
+    Wireless::run(Signup::class, [], function ($signup) {
+        try {
+            $signup->call('reject');   // addError() only — it leaves the bag dirty
+        } catch (ValidationException) {
+            // expected
+        }
+
+        // a method that validates nothing must not inherit the previous call's errors
+        expect($signup->call('untouched')->returned())->toBe('nothing to validate');
+    });
+});
+
+it('clears the bag again when a later call validates cleanly', function () {
+    Wireless::run(Signup::class, [], function ($signup) {
+        $signup->keepValidationErrors()->call('save');
+
+        expect($signup->errors()->has('email'))->toBeTrue();
+
+        $signup->throwValidationErrors()->set('email', 'a@b.com')->call('save');
+
+        expect($signup->returned())->toBe('saved: a@b.com')
+            ->and($signup->errors()->isEmpty())->toBeTrue();
+    });
+});
+
+it('rethrows the validator own exception, not a rebuilt one', function () {
+    Wireless::run(Signup::class, [], function ($signup) {
+        try {
+            $signup->set('email', 'nope')->call('save');
+        } catch (ValidationException $e) {
+            // a rebuilt exception has no failed rules to report
+            expect($e->validator->failed())->toHaveKey('email')
+                ->and($e->validator->failed()['email'])->toHaveKey('Email');
+
+            return;
+        }
+
+        throw new RuntimeException('it should not have validated');
+    });
+});
+
+it('forgets what the previous call returned when a later one throws', function () {
+    Wireless::run(Broadcaster::class, [], function ($broadcaster) {
+        $broadcaster->call('nothing');
+
+        try {
+            $broadcaster->call('explode');
+        } catch (RuntimeException) {
+            // expected
+        }
+
+        expect($broadcaster->returned())->toBeNull();
+    });
+});
+
+it('sends an event to the component through dispatch()', function () {
+    Wireless::run(Listener::class, [], function ($listener) {
+        $listener->dispatch('order-placed', reference: 'INV-9');
+
+        expect($listener->returned())->toBe('handled INV-9')
+            ->and($listener->get('heard'))->toBe(['INV-9']);
+    });
+});
 
 it('lets the component dispatch to the browser', function () {
     Wireless::run(Broadcaster::class, [], function ($broadcaster) {

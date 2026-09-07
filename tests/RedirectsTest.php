@@ -4,8 +4,12 @@ declare(strict_types=1);
 
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Support\Facades\Route;
-use Livewire\Livewire;
+use Livewire\Features\SupportLazyLoading\SupportLazyLoading;
+use Livewire\Features\SupportRedirects\SupportRedirects;
+use Livewire\Mechanisms\HandleComponents\HandleComponents;
 use RobertStanciu\Wireless\Facades\Wireless;
+use RobertStanciu\Wireless\Tests\Fixtures\Exploding;
+use RobertStanciu\Wireless\Tests\Fixtures\Lazy;
 use RobertStanciu\Wireless\Tests\Fixtures\Traveller;
 
 beforeEach(function () {
@@ -85,9 +89,42 @@ it('keeps the redirector intact across nested cycles', function () {
     expect(app('redirect'))->toBe($before);
 });
 
-it('does not leak livewire state into the next cycle', function () {
-    Wireless::run(Traveller::class, [], fn ($traveller) => $traveller->call('toPath'));
+it('gives the real redirector back when mount() itself throws', function () {
+    $before = app('redirect');
 
-    expect(Livewire::isLivewireRequest())->toBeFalse()
-        ->and(app('livewire')->current())->toBeFalsy();
+    expect(fn () => Wireless::run(Exploding::class, [], fn ($driver) => null))
+        ->toThrow(DomainException::class);
+
+    expect(app('redirect'))->toBe($before);
+});
+
+it('leaves lazy loading alone even when mount() throws', function () {
+    expect(fn () => Wireless::run(Exploding::class, [], fn ($driver) => null))
+        ->toThrow(DomainException::class);
+
+    // the next lazy component must still mount for real, and Livewire's global switch untouched
+    expect(SupportLazyLoading::$disableWhileTesting)->toBeFalse();
+
+    Wireless::run(Lazy::class, [], fn ($lazy) => expect($lazy->get('state'))->toBe('mounted for real'));
+});
+
+it('balances livewire own bookkeeping stacks', function () {
+    $redirectors = count(SupportRedirects::$redirectorCacheStack);
+    $components = count(HandleComponents::$componentStack);
+
+    foreach (range(1, 5) as $ignored) {
+        Wireless::run(Traveller::class, [], fn ($traveller) => $traveller->call('toPath'));
+    }
+
+    // both grow per mount and are only unwound by hooks this cycle never runs
+    expect(SupportRedirects::$redirectorCacheStack)->toHaveCount($redirectors)
+        ->and(HandleComponents::$componentStack)->toHaveCount($components);
+});
+
+it('makes the driven component the current one, so nested mounts find their parent', function () {
+    Wireless::run(Traveller::class, [], function ($traveller) {
+        expect(app('livewire')->current())->toBe($traveller->instance());
+    });
+
+    expect(app('livewire')->current())->toBeFalsy();
 });

@@ -10,7 +10,7 @@ use RobertStanciu\Wireless\ComponentDriver;
 use RobertStanciu\Wireless\Wireless as Manager;
 
 /**
- * @method static mixed run(string $component, array $params, Closure $callback)
+ * @method static mixed run(string $component, array|Closure $params = [], ?Closure $callback = null)
  * @method static ComponentDriver component(string $component)
  *
  * @see Manager

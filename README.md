@@ -22,17 +22,32 @@ $invoice = Wireless::run(CreateInvoice::class, ['company' => $company], fn ($for
 
 ## Installation
 
+Not on Packagist yet — point Composer at the repository, then pick the line that matches your
+Livewire:
+
 ```bash
-composer require robert-stanciu/wireless
+composer config repositories.wireless vcs https://github.com/robert-stanciu/wireless
+
+composer require robert-stanciu/wireless:^2.0   # Livewire 4
+composer require robert-stanciu/wireless:^1.0   # Livewire 3
 ```
 
-| Wireless | Livewire |
-| --- | --- |
-| `^2.0` | `^4.0` |
-| `^1.0` | `^3.0` |
+| Wireless | Livewire | Laravel | PHP |
+| --- | --- | --- | --- |
+| `^2.0` | `^4.0` | 12, 13 | 8.2+ |
+| `^1.0` | `^3.0` | 12, 13 | 8.2+ |
 
-The two majors exist because Livewire changed the signatures of the `mount` and `call` hooks; the
-package API is identical on both.
+You are reading the `2.x` line (Livewire 4). The two majors exist because Livewire changed the
+signatures of the `mount` and `call` hooks; the package API is identical on both, and features ship
+to both lines at once.
+
+**Which one do I want?**
+
+- Asserting on rendered HTML, `wire:` directives or a whole request → `Livewire::test()`, or a real
+  request.
+- Running a component's *behaviour* outside a browser — a job, a command, an import → Wireless.
+- Both, in a test suite? `Livewire::test()` is still the right tool there. Wireless is for
+  production code paths.
 
 ## Why
 
@@ -69,6 +84,9 @@ $driver->get('email');                           // dotted paths work: 'form.lin
 $driver->call('save', $argument);                // hooks, wire:model state, validation
 $driver->returned();                             // what save() returned
 
+$driver->dispatch('order-placed', reference: 'INV-1');  // deliver an event to its own listeners
+$driver->actingAs($user);                        // for this cycle; the previous user is put back
+$driver->tap(fn ($d) => logger($d->get('total')));
 $driver->errors();                               // the component's MessageBag
 $driver->redirect();                             // '/dashboard', or null
 $driver->dispatches();                           // [['name' => 'saved', 'params' => [...]], ...]
@@ -96,16 +114,30 @@ foreach ($rows as $row) {
 }
 ```
 
-Prefer to inspect the bag instead? `->keepValidationErrors()` turns the throw off for that driver.
+Prefer to inspect the bag instead? `->keepValidationErrors()` turns the throw off for that driver
+(and `->throwValidationErrors()` turns it back on). The exception you catch is the validator's own,
+so `$e->validator->failed()` still tells you which rules failed — unless the component only called
+`addError()`, in which case there was no exception to keep and you get one built from the bag.
 
 ## What it does not do
 
-- **No rendering.** Wireless drives behaviour, not Blade. Reach for `Livewire::test()` (assertions
-  against HTML) or a real request when you need the view.
-- **No client round trip.** There is no snapshot, no checksum, no `wire:navigate`; effects are
-  readable but nothing is sent anywhere.
-- **Lazy components mount eagerly.** There is no browser to ask for the real component after the
-  placeholder, so `Livewire::withoutLazyLoading()` is applied to the cycle.
+- **No rendering.** Wireless drives behaviour, not Blade: `render()` never runs, so `rendering()` /
+  `rendered()` hooks, `#[Renderless]` and any state a component builds *inside* `render()` are not
+  part of the picture — and a broken view will not be caught here. Reach for `Livewire::test()`
+  (assertions against HTML) or a real request when you need the view.
+- **No client round trip.** There is no snapshot, no checksum, no `wire:navigate`. Nothing is
+  serialised between calls, so the component keeps object identity — checksum and `#[Locked]`
+  violations that only a round trip could surface will not appear.
+- **No `dehydrate`.** That hook turns a redirect into `abort(redirect(...))` outside a Livewire
+  request, so the cycle deliberately stops before it. The consequence: `#[Session]` and `#[Url]`
+  properties are not persisted, and `$this->download()` produces no effect — read `redirect()` and
+  `dispatches()` instead, which come from the same place Livewire reads them.
+- **Values are assigned, not hydrated from the wire.** `set('date', '2025-01-01')` on a
+  `public Carbon $date` assigns the string; a browser update would run it through the synthesizers
+  first. Pass real PHP values (`set('date', now())`).
+- **Lazy components mount eagerly**, per cycle — the mount is told `lazy: false` the way
+  `<livewire:x :lazy="false">` does, so Livewire's global switch is left alone. There is no browser
+  to come back for the real component after a placeholder.
 
 ## Tested against the real thing
 

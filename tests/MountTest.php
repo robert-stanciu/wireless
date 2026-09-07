@@ -6,6 +6,7 @@ use Livewire\Exceptions\ComponentNotFoundException;
 use Livewire\Livewire;
 use RobertStanciu\Wireless\Facades\Wireless;
 use RobertStanciu\Wireless\Tests\Fixtures\Counter;
+use RobertStanciu\Wireless\Tests\Fixtures\Hooked;
 use RobertStanciu\Wireless\Tests\Fixtures\Injected;
 use RobertStanciu\Wireless\Tests\Fixtures\Lazy;
 use RobertStanciu\Wireless\Tests\Fixtures\Signup;
@@ -61,12 +62,24 @@ it('complains about a component that does not exist', function () {
         ->toThrow(ComponentNotFoundException::class);
 });
 
-it('mounts one component inside another', function () {
-    $inner = Wireless::run(Counter::class, ['start' => 1], fn ($outer) => Wireless::run(
-        Counter::class,
-        ['start' => 10],
-        fn ($nested) => $nested->call('increment')->get('count'),
-    ));
+it('fires the lifecycle hooks a real mount fires, in order', function () {
+    Wireless::run(Hooked::class, [], function ($hooked) {
+        // hydrate belongs to a request that rebuilds a component from a snapshot; there is none here
+        expect($hooked->get('trace'))->toBe(['boot', 'mount', 'booted']);
+    });
+});
 
-    expect($inner)->toBe(11);
+it('mounts one component inside another and leaves the outer one usable', function () {
+    Wireless::run(Counter::class, ['start' => 1], function ($outer) {
+        $outer->call('increment');
+
+        $inner = Wireless::run(Counter::class, ['start' => 10], fn ($nested) => $nested
+            ->call('increment')
+            ->get('count'));
+
+        // the inner teardown must not take the outer cycle's state with it
+        expect($inner)->toBe(11)
+            ->and($outer->call('increment')->get('count'))->toBe(3)
+            ->and(app('livewire')->current())->toBe($outer->instance());
+    });
 });

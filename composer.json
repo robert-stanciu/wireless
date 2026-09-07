@@ -8,6 +8,10 @@
         "headless"
     ],
     "homepage": "https://github.com/robert-stanciu/wireless",
+    "support": {
+        "issues": "https://github.com/robert-stanciu/wireless/issues",
+        "source": "https://github.com/robert-stanciu/wireless"
+    },
     "license": "MIT",
     "authors": [
         {
@@ -17,13 +21,13 @@
     ],
     "require": {
         "php": "^8.2",
-        "illuminate/contracts": "^12.0",
-        "illuminate/support": "^12.0",
+        "illuminate/support": "^12.0|^13.0",
+        "illuminate/validation": "^12.0|^13.0",
         "livewire/livewire": "^4.0"
     },
     "require-dev": {
         "laravel/pint": "^1.18",
-        "orchestra/testbench": "^10.0",
+        "orchestra/testbench": "^10.0|^11.0",
         "pestphp/pest": "^3.0|^4.0"
     },
     "autoload": {
@@ -47,6 +51,9 @@
         "sort-packages": true
     },
     "extra": {
+        "branch-alias": {
+            "dev-main": "2.x-dev"
+        },
         "laravel": {
             "providers": [
                 "RobertStanciu\\Wireless\\WirelessServiceProvider"
@@ -55,7 +62,5 @@
                 "Wireless": "RobertStanciu\\Wireless\\Facades\\Wireless"
             }
         }
-    },
-    "minimum-stability": "stable",
-    "prefer-stable": true
+    }
 }

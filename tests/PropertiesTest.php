@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 use Illuminate\Support\Collection;
 use Livewire\Features\SupportLockedProperties\CannotUpdateLockedPropertyException;
+use Livewire\Livewire;
 use RobertStanciu\Wireless\Facades\Wireless;
 use RobertStanciu\Wireless\Tests\Fixtures\Basket;
+use RobertStanciu\Wireless\Tests\Fixtures\Cascading;
 use RobertStanciu\Wireless\Tests\Fixtures\Counter;
 use RobertStanciu\Wireless\Tests\Fixtures\Guarded;
 use RobertStanciu\Wireless\Tests\Fixtures\Signup;
@@ -88,6 +90,32 @@ it('reads a computed property and caches it for the cycle', function () {
         expect($component->doubled)->toBe(4)
             ->and($component->doubled)->toBe(4)
             ->and($guarded->get('computes'))->toBe(1);
+    });
+});
+
+it('applies a multi-key set one key at a time, like Livewire::test() does', function () {
+    // updatedCountry() blanks the city, so the order of writes and hooks is observable —
+    // whatever Livewire's own testing API ends up with is the answer this driver has to match
+    $throughLivewire = Livewire::test(Cascading::class)
+        ->set(['country' => 'RO', 'city' => 'Cluj'])
+        ->get('city');
+
+    Wireless::run(Cascading::class, [], function ($form) use ($throughLivewire) {
+        $form->set(['country' => 'RO', 'city' => 'Cluj']);
+
+        expect($form->get('city'))->toBe($throughLivewire)
+            ->and($form->get('country'))->toBe('RO');
+    });
+});
+
+it('leaves the earlier keys written when a later one is refused', function () {
+    Wireless::run(Guarded::class, [], function ($guarded) {
+        expect(fn () => $guarded->set(['multiplier' => 5, 'ownerId' => 99]))
+            ->toThrow(CannotUpdateLockedPropertyException::class);
+
+        // half-applied, exactly as a request would leave it — pinned so nobody "fixes" it quietly
+        expect($guarded->get('multiplier'))->toBe(5)
+            ->and($guarded->get('ownerId'))->toBe(1);
     });
 });
 
