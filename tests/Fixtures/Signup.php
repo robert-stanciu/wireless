@@ -10,11 +10,27 @@ class Signup extends Component
 {
     public string $email = '';
 
+    public SignupForm $form;
+
     public function save(): string
     {
         $this->validate(['email' => ['required', 'email']]);
 
         return "saved: {$this->email}";
+    }
+
+    /** Validation through a form object — its own rules, its own error keys. */
+    public function saveForm(): string
+    {
+        $this->form->validate();
+
+        return "saved: {$this->form->name} <{$this->form->email}>";
+    }
+
+    /** An error added by hand, not by the validator. */
+    public function reject(): void
+    {
+        $this->addError('email', 'Taken already.');
     }
 
     public function render(): string

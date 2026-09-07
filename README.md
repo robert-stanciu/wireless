@@ -71,7 +71,8 @@ $driver->returned();                             // what save() returned
 
 $driver->errors();                               // the component's MessageBag
 $driver->redirect();                             // '/dashboard', or null
-$driver->effects();                              // dispatches, and everything else Livewire recorded
+$driver->dispatches();                           // [['name' => 'saved', 'params' => [...]], ...]
+$driver->effects();                              // whatever Livewire has already written to the context
 $driver->instance();                             // the component itself
 
 $driver->finish();                               // destroy hooks + flush state (idempotent)
@@ -106,7 +107,14 @@ Prefer to inspect the bag instead? `->keepValidationErrors()` turns the throw of
 - **Lazy components mount eagerly.** There is no browser to ask for the real component after the
   placeholder, so `Livewire::withoutLazyLoading()` is applied to the cycle.
 
-## Testing
+## Tested against the real thing
+
+The suite drives real Livewire on both majors — mount parameters and defaults, aliases, lazy
+components, container injection, form objects, nested arrays and collections through the
+synthesizers, `updated()` hooks, locked and computed properties, dispatched events and listeners,
+validation from rules, form objects and `addError()`, redirects (path, named route, `navigate`),
+teardown after an exception, nested and concurrent cycles, and a 25-cycle run that must not leak
+Livewire state.
 
 ```bash
 composer install
